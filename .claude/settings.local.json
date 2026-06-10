@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/weae/.claude/projects/d---project-resolve-table/memory//**)",
+      "Read(//c/Users/weae/.claude/projects/d---project-resolve-table/memory/**)",
+      "Bash(npm run *)"
+    ]
+  }
+}
