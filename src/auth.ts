@@ -8,8 +8,8 @@ export type Role = 'admin' | 'viewer';
 export type User = { username: string; password: string; role: Role };
 
 export const USERS: User[] = [
-  { username: 'admin', password: 'admin', role: 'admin' }, // полный доступ
-  { username: 'viewer', password: 'viewer', role: 'viewer' }, // только просмотр
+  { username: 'cadmin', password: 'Cadence!2026', role: 'admin' }, // полный доступ
+  { username: 'cview', password: 'View!2026', role: 'viewer' }, // только просмотр
 ];
 
 export type Session = { username: string; role: Role };
