@@ -904,6 +904,305 @@ tbody select {
   display: inline-block;
 }
 
+/* --- Взаимодействия --- */
+
+.interaction-list {
+  display: grid;
+  gap: 12px;
+}
+
+.interaction-row {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #e5e7eb;
+  border-left: 4px solid #6366f1;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: #fafafb;
+}
+
+.interaction-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.interaction-kind {
+  flex: 0 0 200px;
+  font-weight: 600;
+}
+
+.interaction-date {
+  flex: 0 0 170px;
+}
+
+.interaction-nodate {
+  color: #9ca3af;
+  font-size: 0.85rem;
+}
+
+.interaction-title {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.interaction-fields {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.interaction-fields label {
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
+.interaction-note {
+  width: 100%;
+}
+
+.interaction-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.interaction-actions .delete-button {
+  padding: 8px 14px;
+  font-size: 0.9rem;
+}
+
+/* --- Документы --- */
+
+.doc-cell {
+  text-align: center;
+}
+
+.doc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.doc-chip:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+
+/* Модалка вложений (через портал в body) */
+.doc-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 16px;
+  z-index: 1000;
+  overflow-y: auto;
+}
+
+.doc-dialog {
+  background: #fff;
+  border-radius: 20px;
+  padding: 22px;
+  width: 100%;
+  max-width: 640px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.doc-dialog-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.doc-dialog-head h3 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.doc-dialog-head .hint {
+  margin: 4px 0 0;
+}
+
+.doc-close {
+  border: none;
+  background: #f3f4f6;
+  border-radius: 999px;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  flex: none;
+  color: #374151;
+  font-size: 1rem;
+}
+
+.doc-close:hover {
+  background: #e5e7eb;
+}
+
+.doc-upload {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  border: 1px dashed #cbd5e1;
+  border-radius: 14px;
+  padding: 14px;
+  background: #f8fafc;
+}
+
+.doc-file-field {
+  justify-content: flex-end;
+}
+
+.doc-file-btn {
+  position: relative;
+  overflow: hidden;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+}
+
+.doc-file-btn input[type='file'] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.doc-list {
+  display: grid;
+  gap: 10px;
+}
+
+.doc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 10px 14px;
+  background: #fafafb;
+}
+
+.doc-icon {
+  font-size: 1.3rem;
+  flex: none;
+}
+
+.doc-name {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #2563eb;
+  cursor: pointer;
+  text-align: left;
+  font-weight: 600;
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-name:hover {
+  text-decoration: underline;
+}
+
+.doc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+.doc-stage-tag {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-weight: 600;
+}
+
+.doc-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.doc-actions .clear-button,
+.doc-actions .delete-button {
+  padding: 7px 14px;
+  font-size: 0.88rem;
+}
+
+.doc-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.doc-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 1.02rem;
+}
+
+.company-docs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.company-docs-label {
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+.company-doc-chip {
+  border: 1px solid #dbeafe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.company-doc-chip:hover {
+  background: #dbeafe;
+}
+
 @media (max-width: 760px) {
   .page {
     padding: 14px;

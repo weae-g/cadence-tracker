@@ -1,12 +1,27 @@
-import { Item, StageEvent, Task, DEFAULT_STAGES } from './types';
+import { Item, StageEvent, Task, Interaction, DEFAULT_STAGES, DEFAULT_INTERACTION_KINDS } from './types';
 
 const STORAGE_KEY = 'resolve-table-items-v2';
 const LEGACY_KEY = 'resolve-table-items-v1';
 const STAGES_KEY = 'resolve-table-stages-v1';
 const TASKS_KEY = 'resolve-table-tasks-v1';
+const INTERACTIONS_KEY = 'resolve-table-interactions-v1';
 
 export const today = () => new Date().toISOString().slice(0, 10);
 export const now = () => new Date().toISOString();
+
+// crypto.randomUUID доступен лишь в защищённом контексте (https / localhost).
+// При раздаче через nginx по голому http его нет — нужен запасной генератор,
+// иначе добавление письма/задачи падало бы с ошибкой.
+export function uid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 // --- Стадии (редактируемый пользователем список) ---
 
@@ -34,7 +49,7 @@ export function saveStages(stages: string[]) {
 export function defaultItem(initialStage: string = DEFAULT_STAGES[0]): Item {
   const stamp = now();
   return {
-    id: crypto.randomUUID(),
+    id: uid(),
     sentDate: today(),
     counterparty: '',
     contact: '',
@@ -122,7 +137,7 @@ export function withStageChange(item: Item, status: string): Item {
 
 export function defaultTask(): Task {
   return {
-    id: crypto.randomUUID(),
+    id: uid(),
     title: '',
     description: '',
     dueDate: today(),
@@ -138,7 +153,7 @@ export function loadTasks(): Task[] {
   if (!stored) return [];
   try {
     const parsed = JSON.parse(stored) as Partial<Task>[];
-    return parsed.map((raw) => ({ ...defaultTask(), ...raw, id: raw.id ?? crypto.randomUUID() }));
+    return parsed.map((raw) => ({ ...defaultTask(), ...raw, id: raw.id ?? uid() }));
   } catch {
     return [];
   }
@@ -148,4 +163,34 @@ export function saveTasks(tasks: Task[]) {
   localStorage.setItem(TASKS_KEY, JSON.stringify(tasks));
 }
 
-export { STORAGE_KEY, STAGES_KEY, TASKS_KEY };
+// --- Взаимодействия (встречи, совещания, эксперименты и т.п.) ---
+
+export function defaultInteraction(): Interaction {
+  return {
+    id: uid(),
+    kind: DEFAULT_INTERACTION_KINDS[0],
+    date: today(),
+    counterparty: '',
+    title: '',
+    participants: '',
+    note: '',
+    createdAt: now(),
+  };
+}
+
+export function loadInteractions(): Interaction[] {
+  const stored = localStorage.getItem(INTERACTIONS_KEY);
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored) as Partial<Interaction>[];
+    return parsed.map((raw) => ({ ...defaultInteraction(), ...raw, id: raw.id ?? uid() }));
+  } catch {
+    return [];
+  }
+}
+
+export function saveInteractions(list: Interaction[]) {
+  localStorage.setItem(INTERACTIONS_KEY, JSON.stringify(list));
+}
+
+export { STORAGE_KEY, STAGES_KEY, TASKS_KEY, INTERACTIONS_KEY };

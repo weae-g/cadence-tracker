@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Item, stageColor } from './types';
-import { defaultItem, loadItems, loadStages, saveItems, saveStages, today, withStageChange } from './storage';
+import { defaultItem, loadItems, loadStages, saveItems, saveStages, withStageChange } from './storage';
 import { clearSession, loadSession, saveSession, Session } from './auth';
 import { Login } from './Login';
 import { Funnel } from './Funnel';
 import { Tasks } from './Tasks';
+import { Interactions } from './Interactions';
+import { Documents, DocCell } from './Documents';
+import { removeDocumentsByItem, useDocs, fileIcon, openDocument } from './docs';
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
@@ -84,7 +87,9 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   const [filterCounterparty, setFilterCounterparty] = useState('Все контрагенты');
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<'table' | 'view'>(isAdmin ? 'table' : 'view');
-  const [section, setSection] = useState<'letters' | 'tasks'>('letters');
+  const [section, setSection] = useState<'letters' | 'interactions' | 'tasks' | 'documents'>('letters');
+  const [filesBusy, setFilesBusy] = useState(false);
+  const docs = useDocs();
 
   useEffect(() => {
     saveItems(items);
@@ -198,17 +203,24 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
 
   const removeItem = (id: string) => {
     setItems((prev) => prev.filter((item) => item.id !== id));
+    removeDocumentsByItem(id); // каскадно стираем вложения письма
   };
 
-  const exportJson = () => {
-    const payload = { stages: stageList, items };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `resolve-table-${today()}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+  // Модуль экспорта тянет тяжёлый xlsx — грузим его лениво, только по клику.
+  const handleExportExcel = async () => {
+    const { exportToExcel } = await import('./export');
+    exportToExcel(items, stageList);
+  };
+
+  const handleExportFiles = async () => {
+    setFilesBusy(true);
+    try {
+      const { exportDocumentFiles } = await import('./export');
+      const count = await exportDocumentFiles();
+      if (count === 0) window.alert('Документов для выгрузки нет.');
+    } finally {
+      setFilesBusy(false);
+    }
   };
 
   const renderPreview = () => {
@@ -229,6 +241,9 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
             );
             const topics = Array.from(new Set(list.map((item) => item.topic.trim()).filter(Boolean)));
             const statusList = Array.from(new Set(list.map((item) => item.status)));
+            const companyDocs = docs.filter(
+              (d) => (d.counterparty.trim() || 'Без контрагента') === counterparty,
+            );
             return (
               <article key={counterparty} className="company-card">
                 <div className="company-header">
@@ -239,6 +254,22 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                   <span>Тематики: {topics.length ? topics.join(', ') : '—'}</span>
                   <span>Статусы: {statusList.join(', ')}</span>
                 </div>
+                {companyDocs.length ? (
+                  <div className="company-docs">
+                    <span className="company-docs-label">📎 Документы ({companyDocs.length}):</span>
+                    {companyDocs.map((doc) => (
+                      <button
+                        key={doc.id}
+                        type="button"
+                        className="company-doc-chip"
+                        onClick={() => openDocument(doc.id)}
+                        title={`${doc.name}${doc.stage ? ` · ${doc.stage}` : ''}`}
+                      >
+                        {fileIcon(doc)} {doc.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="company-items">
                   {list.map((item) => (
                     <div key={item.id} className="company-item-row">
@@ -329,10 +360,24 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
             </button>
             <button
               type="button"
+              className={section === 'interactions' ? 'toggle-button active' : 'toggle-button'}
+              onClick={() => setSection('interactions')}
+            >
+              Взаимодействия
+            </button>
+            <button
+              type="button"
               className={section === 'tasks' ? 'toggle-button active' : 'toggle-button'}
               onClick={() => setSection('tasks')}
             >
               Задачи
+            </button>
+            <button
+              type="button"
+              className={section === 'documents' ? 'toggle-button active' : 'toggle-button'}
+              onClick={() => setSection('documents')}
+            >
+              Документы
             </button>
           </div>
           {section === 'letters' ? (
@@ -353,9 +398,12 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
               </button>
             </div>
           ) : null}
-          {section === 'letters' ? (
-            <button type="button" onClick={exportJson} className="clear-button">
-              Экспорт
+          <button type="button" onClick={handleExportExcel} className="clear-button">
+            Экспорт в Excel
+          </button>
+          {isAdmin ? (
+            <button type="button" onClick={handleExportFiles} className="clear-button" disabled={filesBusy}>
+              {filesBusy ? 'Архив…' : 'Скачать файлы'}
             </button>
           ) : null}
           <span className={isAdmin ? 'role-badge admin' : 'role-badge viewer'}>
@@ -367,7 +415,11 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
         </div>
       </header>
 
+      {section === 'interactions' ? <Interactions isAdmin={isAdmin} /> : null}
+
       {section === 'tasks' ? <Tasks isAdmin={isAdmin} /> : null}
+
+      {section === 'documents' ? <Documents items={items} stages={stageList} isAdmin={isAdmin} /> : null}
 
       {section === 'letters' && (
       <>
@@ -569,6 +621,7 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                     <th>Срок, дн.</th>
                     <th>Кто отвечает</th>
                     <th>Примечание</th>
+                    <th>Док-ты</th>
                     {isAdmin ? <th>Удалить</th> : null}
                   </tr>
                 </thead>
@@ -660,6 +713,9 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                             onChange={(e) => updateItem(item.id, { note: e.target.value })}
                             placeholder="Примечание"
                           />
+                        </td>
+                        <td className="doc-cell">
+                          <DocCell item={item} isAdmin={isAdmin} stages={stageList} />
                         </td>
                         {isAdmin ? (
                           <td>
