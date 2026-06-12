@@ -1,46 +1,56 @@
-// ⚠️ Клиентская авторизация: барьер от случайных посетителей, НЕ криптозащита.
-// Пароли попадают в собранный JS — подготовленный пользователь их увидит.
-// Для настоящей защиты нужна серверная аутентификация (когда появится бэкенд).
-//
-// Учётки меняй прямо здесь.
+// Клиентская часть авторизации. Пароли НЕ хранятся в приложении — проверку
+// выполняет сервер ([server/server.js]). Сессия живёт в httpOnly-cookie,
+// недоступной из JS, поэтому здесь нет ни паролей, ни токенов.
+
 export type Role = 'admin' | 'viewer';
-
-export type User = { username: string; password: string; role: Role };
-
-export const USERS: User[] = [
-  { username: 'cadmin', password: 'Cadence!2026', role: 'admin' }, // полный доступ
-  { username: 'cview', password: 'View!2026', role: 'viewer' }, // только просмотр
-];
 
 export type Session = { username: string; role: Role };
 
-const SESSION_KEY = 'resolve-table-session-v1';
-
-export function authenticate(username: string, password: string): Session | null {
-  const user = USERS.find(
-    (u) => u.username.toLowerCase() === username.trim().toLowerCase() && u.password === password,
-  );
-  return user ? { username: user.username, role: user.role } : null;
+function isSession(value: unknown): value is Session {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.username === 'string' && (v.role === 'admin' || v.role === 'viewer');
 }
 
-export function loadSession(): Session | null {
-  const raw = localStorage.getItem(SESSION_KEY);
-  if (!raw) return null;
+// Вход: сервер проверяет пароль и ставит cookie сессии. Бросает ошибку с текстом.
+export async function login(username: string, password: string): Promise<Session> {
+  let res: Response;
   try {
-    const parsed = JSON.parse(raw) as Session;
-    if (parsed && typeof parsed.username === 'string' && (parsed.role === 'admin' || parsed.role === 'viewer')) {
-      return parsed;
-    }
+    res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ username, password }),
+    });
   } catch {
-    /* игнорируем битую сессию */
+    throw new Error('Сервер недоступен. Проверьте подключение.');
   }
-  return null;
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || 'Не удалось войти');
+  }
+  const data = await res.json();
+  if (!isSession(data)) throw new Error('Некорректный ответ сервера');
+  return data;
 }
 
-export function saveSession(session: Session) {
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+// Текущая сессия по cookie (для восстановления входа после перезагрузки). null — если нет.
+export async function fetchSession(): Promise<Session | null> {
+  try {
+    const res = await fetch('/api/me', { credentials: 'same-origin' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return isSession(data) ? data : null;
+  } catch {
+    return null;
+  }
 }
 
-export function clearSession() {
-  localStorage.removeItem(SESSION_KEY);
+// Выход: сервер стирает cookie сессии.
+export async function logout(): Promise<void> {
+  try {
+    await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch {
+    /* даже если запрос не прошёл — на клиенте всё равно разлогиниваемся */
+  }
 }

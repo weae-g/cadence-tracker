@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Task } from './types';
 import { defaultTask, loadTasks, saveTasks, today } from './storage';
 import { MonthlyReport } from './MonthlyReport';
+import { BarChart, EMPTY_RANGE, KpiRow, Range, RangeFilter, TrendChart, inRange, isRangeActive, trendFromDates } from './charts';
 
 const monthKey = (date: string) => (date ? date.slice(0, 7) : '');
 
@@ -21,8 +22,9 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
   const [tasks, setTasks] = useState<Task[]>(() => loadTasks());
   const [newTask, setNewTask] = useState<Task>(() => defaultTask());
   const [monthFilter, setMonthFilter] = useState('Все');
-  const [mode, setMode] = useState<'list' | 'report'>('list');
+  const [mode, setMode] = useState<'list' | 'charts' | 'report'>('list');
   const [reportMonth, setReportMonth] = useState(() => today().slice(0, 7));
+  const [range, setRange] = useState<Range>(EMPTY_RANGE);
 
   useEffect(() => {
     saveTasks(tasks);
@@ -64,6 +66,27 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
     [active, monthFilter],
   );
 
+  // Аналитика: задача попадает в период, если её срок или дата выполнения внутри него.
+  const analytics = useMemo(() => {
+    const todayStr = today();
+    const inWindow = tasks.filter((t) =>
+      isRangeActive(range) ? inRange(t.dueDate, range) || inRange(t.completedDate, range) : true,
+    );
+    const done = inWindow.filter((t) => t.done);
+    const open = inWindow.filter((t) => !t.done);
+    const overdue = open.filter((t) => !!t.dueDate && t.dueDate < todayStr).length;
+    const total = inWindow.length;
+    return {
+      total,
+      done: done.length,
+      open: open.length,
+      overdue,
+      rate: total === 0 ? 0 : Math.round((done.length / total) * 100),
+      dueTrend: trendFromDates(inWindow.map((t) => t.dueDate)),
+      doneTrend: trendFromDates(done.map((t) => t.completedDate)),
+    };
+  }, [tasks, range]);
+
   const addTask = () => {
     if (!newTask.title.trim()) return;
     setTasks((prev) => [newTask, ...prev]);
@@ -76,7 +99,10 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
 
   const completeTask = (id: string) => updateTask(id, { done: true, completedDate: today() });
   const reopenTask = (id: string) => updateTask(id, { done: false, completedDate: '' });
-  const removeTask = (id: string) => setTasks((prev) => prev.filter((t) => t.id !== id));
+  const removeTask = (id: string) => {
+    if (!window.confirm('Удалить задачу?')) return;
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+  };
 
   const todayStr = today();
 
@@ -90,6 +116,13 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
             onClick={() => setMode('list')}
           >
             Список
+          </button>
+          <button
+            type="button"
+            className={mode === 'charts' ? 'toggle-button active' : 'toggle-button'}
+            onClick={() => setMode('charts')}
+          >
+            Диаграммы
           </button>
           <button
             type="button"
@@ -121,6 +154,32 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
       {mode === 'report' ? (
         <section className="card report-card">
           <MonthlyReport tasks={tasks} month={reportMonth} />
+        </section>
+      ) : mode === 'charts' ? (
+        <section className="card">
+          <h2>Диаграммы задач</h2>
+          <RangeFilter range={range} onChange={setRange} />
+          <KpiRow
+            items={[
+              { label: 'Всего задач', value: analytics.total },
+              { label: 'Выполнено', value: analytics.done, tone: 'ok' },
+              { label: 'В работе', value: analytics.open },
+              { label: 'Просрочено', value: analytics.overdue, tone: 'warn' },
+              { label: 'Выполнение', value: `${analytics.rate}%`, tone: 'accent' },
+            ]}
+          />
+          <div className="charts-grid">
+            <BarChart
+              title="Статус задач"
+              data={[
+                { label: 'Выполнено', value: analytics.done, color: '#10b981' },
+                { label: 'В работе', value: analytics.open, color: '#3b82f6' },
+                { label: 'Просрочено', value: analytics.overdue, color: '#ef4444' },
+              ]}
+            />
+            <TrendChart title="Поставлено (по сроку)" subtitle="по месяцам" data={analytics.dueTrend} color="#3b82f6" />
+            <TrendChart title="Выполнено" subtitle="по месяцам" data={analytics.doneTrend} color="#10b981" />
+          </div>
         </section>
       ) : (
       <>
@@ -186,53 +245,19 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
         {filteredActive.length === 0 ? (
           <p className="empty-state">Активных задач нет.</p>
         ) : (
-          <fieldset className="task-fieldset" disabled={!isAdmin}>
-            <div className="task-list">
-              {filteredActive.map((task) => {
-                const overdue = !!task.dueDate && task.dueDate < todayStr;
-                return (
-                  <article key={task.id} className={overdue ? 'task-row overdue' : 'task-row'}>
-                    <div className="task-main">
-                      <input
-                        className="task-title"
-                        value={task.title}
-                        onChange={(e) => updateTask(task.id, { title: e.target.value })}
-                        placeholder="Название задачи"
-                      />
-                      <textarea
-                        className="task-desc"
-                        rows={2}
-                        value={task.description}
-                        onChange={(e) => updateTask(task.id, { description: e.target.value })}
-                        placeholder="Описание"
-                      />
-                    </div>
-                    <div className="task-side">
-                      <label className="task-due">
-                        Срок
-                        <input
-                          type="date"
-                          value={task.dueDate}
-                          onChange={(e) => updateTask(task.id, { dueDate: e.target.value })}
-                        />
-                      </label>
-                      {overdue ? <span className="task-flag">просрочено</span> : null}
-                      {isAdmin && (
-                        <div className="task-actions">
-                          <button type="button" className="primary-button" onClick={() => completeTask(task.id)}>
-                            Выполнить
-                          </button>
-                          <button type="button" className="delete-button" onClick={() => removeTask(task.id)}>
-                            Удалить
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          </fieldset>
+          <div className="task-list">
+            {filteredActive.map((task) => (
+              <ActiveTaskRow
+                key={task.id}
+                task={task}
+                isAdmin={isAdmin}
+                todayStr={todayStr}
+                onUpdate={updateTask}
+                onComplete={completeTask}
+                onRemove={removeTask}
+              />
+            ))}
+          </div>
         )}
       </section>
 
@@ -280,5 +305,89 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
       </>
       )}
     </>
+  );
+}
+
+// Строка активной задачи. По умолчанию заблокирована (показывается как текст),
+// чтобы случайно не изменить уже заведённую задачу. Правка — по кнопке «✎ Изменить».
+function ActiveTaskRow({
+  task,
+  isAdmin,
+  todayStr,
+  onUpdate,
+  onComplete,
+  onRemove,
+}: {
+  task: Task;
+  isAdmin: boolean;
+  todayStr: string;
+  onUpdate: (id: string, partial: Partial<Task>) => void;
+  onComplete: (id: string) => void;
+  onRemove: (id: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const overdue = !!task.dueDate && task.dueDate < todayStr;
+
+  return (
+    <article className={overdue ? 'task-row overdue' : 'task-row'}>
+      <div className="task-main">
+        {editing ? (
+          <>
+            <input
+              className="task-title"
+              value={task.title}
+              onChange={(e) => onUpdate(task.id, { title: e.target.value })}
+              placeholder="Название задачи"
+            />
+            <textarea
+              className="task-desc"
+              rows={2}
+              value={task.description}
+              onChange={(e) => onUpdate(task.id, { description: e.target.value })}
+              placeholder="Описание"
+            />
+          </>
+        ) : (
+          <>
+            <div className="task-title-static">{task.title || 'Без названия'}</div>
+            {task.description ? <div className="task-desc-static">{task.description}</div> : null}
+          </>
+        )}
+      </div>
+      <div className="task-side">
+        <label className="task-due">
+          Срок
+          {editing ? (
+            <input
+              type="date"
+              value={task.dueDate}
+              onChange={(e) => onUpdate(task.id, { dueDate: e.target.value })}
+            />
+          ) : (
+            <span className="task-due-static">{formatDate(task.dueDate)}</span>
+          )}
+        </label>
+        {overdue ? <span className="task-flag">просрочено</span> : null}
+        {isAdmin && (
+          <div className="task-actions">
+            {editing ? (
+              <button type="button" className="primary-button" onClick={() => setEditing(false)}>
+                Готово
+              </button>
+            ) : (
+              <button type="button" className="clear-button" onClick={() => setEditing(true)}>
+                ✎ Изменить
+              </button>
+            )}
+            <button type="button" className="primary-button" onClick={() => onComplete(task.id)}>
+              Выполнить
+            </button>
+            <button type="button" className="delete-button" onClick={() => onRemove(task.id)}>
+              Удалить
+            </button>
+          </div>
+        )}
+      </div>
+    </article>
   );
 }

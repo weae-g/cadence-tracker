@@ -1,18 +1,24 @@
 import { useState } from 'react';
-import { authenticate, Session } from './auth';
+import { login, Session } from './auth';
 
 export function Login({ onLogin }: { onLogin: (session: Session) => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const session = authenticate(username, password);
-    if (session) {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const session = await login(username, password);
       onLogin(session);
-    } else {
-      setError('Неверный логин или пароль');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось войти');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -23,15 +29,27 @@ export function Login({ onLogin }: { onLogin: (session: Session) => void }) {
         <p className="subtitle">Войдите, чтобы продолжить</p>
         <label>
           Логин
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus placeholder="admin / viewer" />
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+            autoComplete="username"
+            placeholder="Логин"
+          />
         </label>
         <label>
           Пароль
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••" />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            placeholder="••••••"
+          />
         </label>
         {error ? <p className="login-error">{error}</p> : null}
-        <button type="submit" className="primary-button">
-          Войти
+        <button type="submit" className="primary-button" disabled={busy}>
+          {busy ? 'Вход…' : 'Войти'}
         </button>
       </form>
     </div>

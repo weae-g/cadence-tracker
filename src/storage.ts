@@ -1,10 +1,12 @@
 import { Item, StageEvent, Task, Interaction, DEFAULT_STAGES, DEFAULT_INTERACTION_KINDS } from './types';
+import { safeSetItem } from './safeStorage';
 
 const STORAGE_KEY = 'resolve-table-items-v2';
 const LEGACY_KEY = 'resolve-table-items-v1';
 const STAGES_KEY = 'resolve-table-stages-v1';
 const TASKS_KEY = 'resolve-table-tasks-v1';
 const INTERACTIONS_KEY = 'resolve-table-interactions-v1';
+const INTERACTION_KINDS_KEY = 'resolve-table-interaction-kinds-v1';
 
 export const today = () => new Date().toISOString().slice(0, 10);
 export const now = () => new Date().toISOString();
@@ -41,7 +43,7 @@ export function loadStages(): string[] {
 }
 
 export function saveStages(stages: string[]) {
-  localStorage.setItem(STAGES_KEY, JSON.stringify(stages));
+  safeSetItem(STAGES_KEY, JSON.stringify(stages));
 }
 
 // --- Записи ---
@@ -118,7 +120,7 @@ export function loadItems(): Item[] {
 }
 
 export function saveItems(items: Item[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  safeSetItem(STORAGE_KEY, JSON.stringify(items));
 }
 
 export function normalizeImport(parsed: unknown): Item[] | null {
@@ -160,7 +162,7 @@ export function loadTasks(): Task[] {
 }
 
 export function saveTasks(tasks: Task[]) {
-  localStorage.setItem(TASKS_KEY, JSON.stringify(tasks));
+  safeSetItem(TASKS_KEY, JSON.stringify(tasks));
 }
 
 // --- Взаимодействия (встречи, совещания, эксперименты и т.п.) ---
@@ -190,7 +192,28 @@ export function loadInteractions(): Interaction[] {
 }
 
 export function saveInteractions(list: Interaction[]) {
-  localStorage.setItem(INTERACTIONS_KEY, JSON.stringify(list));
+  safeSetItem(INTERACTIONS_KEY, JSON.stringify(list));
 }
 
-export { STORAGE_KEY, STAGES_KEY, TASKS_KEY, INTERACTIONS_KEY };
+// --- Типы взаимодействий (редактируемый пользователем список, как стадии воронки) ---
+
+export function loadInteractionKinds(): string[] {
+  const stored = localStorage.getItem(INTERACTION_KINDS_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.every((s) => typeof s === 'string') && parsed.length > 0) {
+        return parsed;
+      }
+    } catch {
+      /* вернём дефолт */
+    }
+  }
+  return [...DEFAULT_INTERACTION_KINDS];
+}
+
+export function saveInteractionKinds(kinds: string[]) {
+  safeSetItem(INTERACTION_KINDS_KEY, JSON.stringify(kinds));
+}
+
+export { STORAGE_KEY, STAGES_KEY, TASKS_KEY, INTERACTIONS_KEY, INTERACTION_KINDS_KEY };

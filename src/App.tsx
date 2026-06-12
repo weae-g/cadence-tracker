@@ -1,13 +1,24 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Item, stageColor } from './types';
 import { defaultItem, loadItems, loadStages, saveItems, saveStages, withStageChange } from './storage';
-import { clearSession, loadSession, saveSession, Session } from './auth';
+import { fetchSession, logout, Session } from './auth';
 import { Login } from './Login';
 import { Funnel } from './Funnel';
 import { Tasks } from './Tasks';
 import { Interactions } from './Interactions';
 import { Documents, DocCell } from './Documents';
 import { removeDocumentsByItem, useDocs, fileIcon, openDocument } from './docs';
+import { BarChart, EMPTY_RANGE, KpiRow, Range, RangeFilter, TrendChart, countBy, inRange, isRangeActive, trendFromDates } from './charts';
+import { Dashboard } from './Dashboard';
+import { GlobalSearch, Section } from './GlobalSearch';
+
+const SECTION_KEY = 'resolve-table-section-v1';
+const VIEWMODE_KEY = 'resolve-table-viewmode-v1';
+
+const SECTION_VALUES: Section[] = ['dashboard', 'letters', 'interactions', 'tasks', 'documents'];
+
+// Колонки таблицы писем, по которым доступна сортировка.
+type SortKey = 'sentDate' | 'counterparty' | 'status' | 'replyDate' | 'wait';
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
@@ -86,9 +97,21 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   const [filterStatus, setFilterStatus] = useState('Все');
   const [filterCounterparty, setFilterCounterparty] = useState('Все контрагенты');
   const [search, setSearch] = useState('');
-  const [viewMode, setViewMode] = useState<'table' | 'view'>(isAdmin ? 'table' : 'view');
-  const [section, setSection] = useState<'letters' | 'interactions' | 'tasks' | 'documents'>('letters');
+  const [globalQuery, setGlobalQuery] = useState('');
+  const [previewRange, setPreviewRange] = useState<Range>(EMPTY_RANGE);
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
+  const [viewMode, setViewMode] = useState<'table' | 'view'>(() => {
+    const saved = localStorage.getItem(VIEWMODE_KEY);
+    if (saved === 'table' || saved === 'view') return saved;
+    return isAdmin ? 'table' : 'view';
+  });
+  const [section, setSection] = useState<Section>(() => {
+    const saved = localStorage.getItem(SECTION_KEY) as Section | null;
+    return saved && SECTION_VALUES.includes(saved) ? saved : 'dashboard';
+  });
   const [filesBusy, setFilesBusy] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
   const docs = useDocs();
 
   useEffect(() => {
@@ -98,6 +121,15 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   useEffect(() => {
     if (stageList.length) saveStages(stageList);
   }, [stageList]);
+
+  // Запоминаем выбранный раздел и режим письма между перезаходами.
+  useEffect(() => {
+    localStorage.setItem(SECTION_KEY, section);
+  }, [section]);
+
+  useEffect(() => {
+    localStorage.setItem(VIEWMODE_KEY, viewMode);
+  }, [viewMode]);
 
   const counterparties = useMemo(
     () => [...new Set(items.map((item) => item.counterparty.trim() || 'Без контрагента'))],
@@ -130,15 +162,36 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
     return counts;
   }, [items]);
 
-  const timelineRange = useMemo(() => {
-    const dates = filteredItems
-      .flatMap((item) => [parseDate(item.sentDate), parseDate(item.replyDate)])
-      .filter((date): date is Date => date !== null);
-    if (dates.length === 0) return null;
-    const min = new Date(Math.min(...dates.map((date) => date.getTime())));
-    const max = new Date(Math.max(...dates.map((date) => date.getTime())));
-    return { start: min, end: max };
-  }, [filteredItems]);
+  // Сортировка таблицы (если выбрана колонка). По умолчанию — исходный порядок.
+  const sortedItems = useMemo(() => {
+    if (!sort) return filteredItems;
+    const value = (it: Item): string | number => {
+      switch (sort.key) {
+        case 'sentDate':
+          return it.sentDate || '';
+        case 'replyDate':
+          return it.replyDate || '';
+        case 'counterparty':
+          return (it.counterparty || '').toLowerCase();
+        case 'status':
+          return it.status || '';
+        case 'wait':
+          return waitingDays(it) ?? -1;
+      }
+    };
+    return [...filteredItems].sort((a, b) => {
+      const va = value(a);
+      const vb = value(b);
+      if (va < vb) return -sort.dir;
+      if (va > vb) return sort.dir;
+      return 0;
+    });
+  }, [filteredItems, sort]);
+
+  // Клик по заголовку: по возр. → по убыв. → без сортировки.
+  const toggleSort = (key: SortKey) =>
+    setSort((prev) => (prev && prev.key === key ? (prev.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
+  const sortMark = (key: SortKey) => (sort?.key === key ? (sort.dir === 1 ? ' ▲' : ' ▼') : '');
 
   // --- управление стадиями ---
 
@@ -202,7 +255,10 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   };
 
   const removeItem = (id: string) => {
-    setItems((prev) => prev.filter((item) => item.id !== id));
+    const item = items.find((i) => i.id === id);
+    const label = item?.subject || item?.counterparty || 'это письмо';
+    if (!window.confirm(`Удалить «${label}»? Вложения письма тоже будут стёрты.`)) return;
+    setItems((prev) => prev.filter((it) => it.id !== id));
     removeDocumentsByItem(id); // каскадно стираем вложения письма
   };
 
@@ -223,20 +279,113 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
     }
   };
 
+  // Резервная копия: всё в один JSON (включая файлы документов).
+  const handleBackup = async () => {
+    setBackupBusy(true);
+    try {
+      const { downloadBackup } = await import('./backup');
+      await downloadBackup();
+    } catch {
+      window.alert('Не удалось создать резервную копию.');
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleRestoreFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (!window.confirm('Восстановление ЗАМЕНИТ все текущие данные на содержимое копии. Продолжить?')) return;
+    setBackupBusy(true);
+    try {
+      const text = await file.text();
+      const { restoreBackup } = await import('./backup');
+      await restoreBackup(text);
+      window.alert('Данные восстановлены. Страница будет перезагружена.');
+      window.location.reload();
+    } catch (e) {
+      window.alert(`Не удалось восстановить: ${e instanceof Error ? e.message : 'неизвестная ошибка'}`);
+      setBackupBusy(false);
+    }
+  };
+
   const renderPreview = () => {
     if (filteredItems.length === 0) {
       return <p className="empty-state">Здесь пока нет данных.</p>;
     }
 
+    // «Участок»: ограничиваем письма выбранным периодом по дате отправки.
+    const rangedItems = isRangeActive(previewRange)
+      ? filteredItems.filter((item) => inRange(item.sentDate, previewRange))
+      : filteredItems;
+
+    const rangeFilter = <RangeFilter range={previewRange} onChange={setPreviewRange} />;
+
+    if (rangedItems.length === 0) {
+      return (
+        <>
+          {rangeFilter}
+          <p className="empty-state">За выбранный период писем нет.</p>
+        </>
+      );
+    }
+
     const previewCounterparties = Array.from(
-      new Set(filteredItems.map((item) => item.counterparty.trim() || 'Без контрагента')),
+      new Set(rangedItems.map((item) => item.counterparty.trim() || 'Без контрагента')),
     );
+
+    // Локальная шкала Ганта — по письмам периода, чтобы диаграмма не «растягивалась» на всё время.
+    const previewTimeline = (() => {
+      const dates = rangedItems
+        .flatMap((item) => [parseDate(item.sentDate), parseDate(item.replyDate)])
+        .filter((date): date is Date => date !== null);
+      if (dates.length === 0) return null;
+      return {
+        start: new Date(Math.min(...dates.map((d) => d.getTime()))),
+        end: new Date(Math.max(...dates.map((d) => d.getTime()))),
+      };
+    })();
+
+    const statusBars = stageList
+      .map((stage, i) => ({
+        label: stage,
+        value: rangedItems.filter((item) => item.status === stage).length,
+        color: stageColor(i),
+      }))
+      .filter((b) => b.value > 0);
+    const orphanBars = countBy(
+      rangedItems.filter((item) => !stageList.includes(item.status)),
+      (item) => item.status,
+      'Без статуса',
+    );
+    const sentTrend = trendFromDates(rangedItems.map((item) => item.sentDate));
+    const repliedCount = rangedItems.filter((item) => item.replyDate).length;
+    const avgWait = (() => {
+      const days = rangedItems.map(waitingDays).filter((d): d is number => d !== null);
+      return days.length ? Math.round(days.reduce((s, d) => s + d, 0) / days.length) : 0;
+    })();
 
     return (
       <>
+        {rangeFilter}
+
+        <KpiRow
+          items={[
+            { label: 'Писем', value: rangedItems.length },
+            { label: 'Контрагентов', value: previewCounterparties.length },
+            { label: 'С ответом', value: repliedCount, tone: 'ok' },
+            { label: 'Без ответа', value: rangedItems.length - repliedCount, tone: 'warn' },
+            { label: 'Ср. ожидание', value: `${avgWait} дн.`, tone: 'accent' },
+          ]}
+        />
+
+        <div className="charts-grid" style={{ marginBottom: 16 }}>
+          <BarChart title="По статусам" data={[...statusBars, ...orphanBars]} />
+          <TrendChart title="Отправлено по месяцам" data={sentTrend} color="#3b82f6" />
+        </div>
+
         <div className="company-summary-grid">
           {previewCounterparties.map((counterparty) => {
-            const list = filteredItems.filter(
+            const list = rangedItems.filter(
               (item) => (item.counterparty.trim() || 'Без контрагента') === counterparty,
             );
             const topics = Array.from(new Set(list.map((item) => item.topic.trim()).filter(Boolean)));
@@ -295,27 +444,27 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
           })}
         </div>
 
-        <Funnel items={filteredItems} stages={stageList} />
+        <Funnel items={rangedItems} stages={stageList} />
 
         <div className="gantt-card">
           <div className="gantt-header">
             <h3>Диаграмма Ганта</h3>
-            {timelineRange ? (
+            {previewTimeline ? (
               <span>
-                {timelineRange.start.toLocaleDateString('ru-RU')} — {timelineRange.end.toLocaleDateString('ru-RU')}
+                {previewTimeline.start.toLocaleDateString('ru-RU')} — {previewTimeline.end.toLocaleDateString('ru-RU')}
               </span>
             ) : null}
           </div>
           <div className="gantt-chart">
-            {timelineRange ? (
-              filteredItems.map((item) => {
-                const itemStart = parseDate(item.sentDate) ?? timelineRange.start;
+            {previewTimeline ? (
+              rangedItems.map((item) => {
+                const itemStart = parseDate(item.sentDate) ?? previewTimeline.start;
                 const itemEnd = parseDate(item.replyDate) ?? new Date();
                 const totalDays = Math.max(
                   1,
-                  Math.round((timelineRange.end.getTime() - timelineRange.start.getTime()) / ONE_DAY) + 1,
+                  Math.round((previewTimeline.end.getTime() - previewTimeline.start.getTime()) / ONE_DAY) + 1,
                 );
-                const offset = Math.max(0, Math.round((itemStart.getTime() - timelineRange.start.getTime()) / ONE_DAY));
+                const offset = Math.max(0, Math.round((itemStart.getTime() - previewTimeline.start.getTime()) / ONE_DAY));
                 const duration = Math.max(1, Math.round((itemEnd.getTime() - itemStart.getTime()) / ONE_DAY) + 1);
                 const left = `${(offset / totalDays) * 100}%`;
                 const width = `${(duration / totalDays) * 100}%`;
@@ -344,76 +493,139 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
 
   return (
     <div className="page">
-      <header>
-        <div>
-          <p className="brand">Cadence</p>
-          <p className="subtitle">Трекинг писем контрагентам: тематики, статусы ответов, сроки ожидания и воронка.</p>
-        </div>
-        <div className="header-actions">
-          <div className="mode-switch">
-            <button
-              type="button"
-              className={section === 'letters' ? 'toggle-button active' : 'toggle-button'}
-              onClick={() => setSection('letters')}
-            >
-              Письма
+      <header className="app-header">
+        <div className="topbar">
+          <label className="global-search-box">
+            <span aria-hidden>🔎</span>
+            <input
+              value={globalQuery}
+              onChange={(e) => setGlobalQuery(e.target.value)}
+              placeholder="Искать везде…"
+            />
+            {globalQuery ? (
+              <button type="button" className="gs-clear" onClick={() => setGlobalQuery('')} title="Очистить">
+                ✕
+              </button>
+            ) : null}
+          </label>
+          <div className="topbar-actions">
+            <button type="button" onClick={handleExportExcel} className="clear-button">
+              Экспорт в Excel
             </button>
-            <button
-              type="button"
-              className={section === 'interactions' ? 'toggle-button active' : 'toggle-button'}
-              onClick={() => setSection('interactions')}
-            >
-              Взаимодействия
-            </button>
-            <button
-              type="button"
-              className={section === 'tasks' ? 'toggle-button active' : 'toggle-button'}
-              onClick={() => setSection('tasks')}
-            >
-              Задачи
-            </button>
-            <button
-              type="button"
-              className={section === 'documents' ? 'toggle-button active' : 'toggle-button'}
-              onClick={() => setSection('documents')}
-            >
-              Документы
+            {isAdmin ? (
+              <button type="button" onClick={handleExportFiles} className="clear-button" disabled={filesBusy}>
+                {filesBusy ? 'Архив…' : 'Скачать файлы'}
+              </button>
+            ) : null}
+            {isAdmin ? (
+              <button type="button" onClick={handleBackup} className="clear-button" disabled={backupBusy}>
+                {backupBusy ? 'Копия…' : '💾 Копия'}
+              </button>
+            ) : null}
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={() => restoreInputRef.current?.click()}
+                className="clear-button"
+                disabled={backupBusy}
+              >
+                📂 Восстановить
+              </button>
+            ) : null}
+            <input
+              ref={restoreInputRef}
+              type="file"
+              accept="application/json,.json"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                handleRestoreFile(e.target.files?.[0]);
+                e.target.value = '';
+              }}
+            />
+            <button type="button" onClick={onLogout} className="clear-button">
+              Выйти
             </button>
           </div>
-          {section === 'letters' ? (
+        </div>
+
+        <div className="masthead">
+          <div>
+            <p className="brand">Cadence</p>
+            <p className="subtitle">Трекинг писем контрагентам: тематики, статусы ответов, сроки ожидания и воронка.</p>
+          </div>
+          <div className="nav-actions">
             <div className="mode-switch">
               <button
                 type="button"
-                className={viewMode === 'table' ? 'toggle-button active' : 'toggle-button'}
-                onClick={() => setViewMode('table')}
+                className={section === 'dashboard' ? 'toggle-button active' : 'toggle-button'}
+                onClick={() => setSection('dashboard')}
               >
-                Таблица
+                Сводка
               </button>
               <button
                 type="button"
-                className={viewMode === 'view' ? 'toggle-button active' : 'toggle-button'}
-                onClick={() => setViewMode('view')}
+                className={section === 'letters' ? 'toggle-button active' : 'toggle-button'}
+                onClick={() => setSection('letters')}
               >
-                Просмотр
+                Письма
+              </button>
+              <button
+                type="button"
+                className={section === 'interactions' ? 'toggle-button active' : 'toggle-button'}
+                onClick={() => setSection('interactions')}
+              >
+                Взаимодействия
+              </button>
+              <button
+                type="button"
+                className={section === 'tasks' ? 'toggle-button active' : 'toggle-button'}
+                onClick={() => setSection('tasks')}
+              >
+                Задачи
+              </button>
+              <button
+                type="button"
+                className={section === 'documents' ? 'toggle-button active' : 'toggle-button'}
+                onClick={() => setSection('documents')}
+              >
+                Документы
               </button>
             </div>
-          ) : null}
-          <button type="button" onClick={handleExportExcel} className="clear-button">
-            Экспорт в Excel
-          </button>
-          {isAdmin ? (
-            <button type="button" onClick={handleExportFiles} className="clear-button" disabled={filesBusy}>
-              {filesBusy ? 'Архив…' : 'Скачать файлы'}
-            </button>
-          ) : null}
-          <span className={isAdmin ? 'role-badge admin' : 'role-badge viewer'}>
-            {session.username} · {isAdmin ? 'admin' : 'просмотр'}
-          </span>
-          <button type="button" onClick={onLogout} className="clear-button">
-            Выйти
-          </button>
+            {section === 'letters' ? (
+              <div className="mode-switch">
+                <button
+                  type="button"
+                  className={viewMode === 'table' ? 'toggle-button active' : 'toggle-button'}
+                  onClick={() => setViewMode('table')}
+                >
+                  Таблица
+                </button>
+                <button
+                  type="button"
+                  className={viewMode === 'view' ? 'toggle-button active' : 'toggle-button'}
+                  onClick={() => setViewMode('view')}
+                >
+                  Просмотр
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
+
+      {globalQuery.trim() ? (
+        <GlobalSearch
+          query={globalQuery}
+          items={items}
+          docs={docs}
+          onJump={(target) => {
+            setSection(target);
+            setGlobalQuery('');
+          }}
+        />
+      ) : null}
+
+      {section === 'dashboard' ? <Dashboard items={items} stages={stageList} docs={docs} /> : null}
 
       {section === 'interactions' ? <Interactions isAdmin={isAdmin} /> : null}
 
@@ -610,15 +822,25 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                 <thead>
                   <tr>
                     <th>#</th>
-                    <th>Дата отправки</th>
-                    <th>Контрагент</th>
+                    <th className="sortable" onClick={() => toggleSort('sentDate')} title="Сортировать">
+                      Дата отправки{sortMark('sentDate')}
+                    </th>
+                    <th className="sortable" onClick={() => toggleSort('counterparty')} title="Сортировать">
+                      Контрагент{sortMark('counterparty')}
+                    </th>
                     <th>Адресат / контакт</th>
                     <th>Email / канал</th>
                     <th>Тематика</th>
                     <th>Тема письма</th>
-                    <th>Статус ответа</th>
-                    <th>Дата ответа</th>
-                    <th>Срок, дн.</th>
+                    <th className="sortable" onClick={() => toggleSort('status')} title="Сортировать">
+                      Статус ответа{sortMark('status')}
+                    </th>
+                    <th className="sortable" onClick={() => toggleSort('replyDate')} title="Сортировать">
+                      Дата ответа{sortMark('replyDate')}
+                    </th>
+                    <th className="sortable" onClick={() => toggleSort('wait')} title="Сортировать">
+                      Срок, дн.{sortMark('wait')}
+                    </th>
                     <th>Кто отвечает</th>
                     <th>Примечание</th>
                     <th>Док-ты</th>
@@ -626,7 +848,7 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredItems.map((item, index) => {
+                  {sortedItems.map((item, index) => {
                     const days = waitingDays(item);
                     const overdue = days !== null && !item.replyDate && days > 14;
                     return (
@@ -766,28 +988,73 @@ function AddStageInline({ onAdd }: { onAdd: (name: string) => void }) {
   );
 }
 
-// Гейт авторизации: без сессии показываем экран входа, иначе — приложение с ролью.
-export default function App() {
-  const [session, setSession] = useState<Session | null>(() => loadSession());
+// Авто-выход по бездействию (мин). По истечении пользователя разлогинивает.
+const IDLE_LIMIT_MS = 30 * 60 * 1000;
+// Период фоновой проверки сессии — ловит истечение токена на сервере.
+const SESSION_POLL_MS = 5 * 60 * 1000;
 
-  if (!session) {
+// Гейт авторизации: спрашиваем сервер о текущей сессии (cookie),
+// показываем вход или приложение. Авто-выход по простою и по истечении токена.
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Восстановление сессии при загрузке.
+  useEffect(() => {
+    let alive = true;
+    fetchSession().then((s) => {
+      if (!alive) return;
+      setSession(s);
+      setLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    await logout();
+    setSession(null);
+  }, []);
+
+  // Авто-выход: таймер простоя + периодическая проверка живости сессии.
+  useEffect(() => {
+    if (!session) return;
+    let idleTimer = window.setTimeout(handleLogout, IDLE_LIMIT_MS);
+    const resetIdle = () => {
+      window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(handleLogout, IDLE_LIMIT_MS);
+    };
+    const activity: string[] = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+    activity.forEach((e) => window.addEventListener(e, resetIdle, { passive: true }));
+
+    const poll = window.setInterval(() => {
+      fetchSession().then((s) => {
+        if (!s) setSession(null); // токен истёк/сессия снята на сервере
+      });
+    }, SESSION_POLL_MS);
+
+    return () => {
+      window.clearTimeout(idleTimer);
+      window.clearInterval(poll);
+      activity.forEach((e) => window.removeEventListener(e, resetIdle));
+    };
+  }, [session, handleLogout]);
+
+  if (loading) {
     return (
-      <Login
-        onLogin={(s) => {
-          saveSession(s);
-          setSession(s);
-        }}
-      />
+      <div className="login-page">
+        <div className="login-card">
+          <p className="brand">Cadence</p>
+          <p className="subtitle">Загрузка…</p>
+        </div>
+      </div>
     );
   }
 
-  return (
-    <AppContent
-      session={session}
-      onLogout={() => {
-        clearSession();
-        setSession(null);
-      }}
-    />
-  );
+  if (!session) {
+    return <Login onLogin={setSession} />;
+  }
+
+  return <AppContent session={session} onLogout={handleLogout} />;
 }

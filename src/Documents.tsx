@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Item } from './types';
+import { Item, stageColor } from './types';
 import {
   DocMeta,
   addDocument,
@@ -9,8 +9,10 @@ import {
   formatSize,
   openDocument,
   removeDocument,
+  updateDocument,
   useDocs,
 } from './docs';
+import { BarChart, EMPTY_RANGE, KpiRow, Range, RangeFilter, TrendChart, countBy, inRange, isRangeActive, trendFromDates } from './charts';
 
 function formatDateTime(iso: string) {
   const date = new Date(iso);
@@ -41,29 +43,71 @@ function DocRow({
       removeDocument(doc.id);
     }
   };
+  const renameDoc = () => {
+    const name = window.prompt('Имя документа:', doc.name)?.trim();
+    if (name && name !== doc.name) updateDocument(doc.id, { name });
+  };
   return (
     <div className="doc-row">
-      <span className="doc-icon">{fileIcon(doc)}</span>
-      <button type="button" className="doc-name" onClick={() => openDocument(doc.id)} title="Открыть">
-        {doc.name}
-      </button>
-      <div className="doc-meta">
-        {showCompany ? <span>{doc.counterparty || 'Без контрагента'}</span> : null}
-        {showStage && doc.stage ? <span className="doc-stage-tag">{doc.stage}</span> : null}
-        <span>{formatSize(doc.size)}</span>
-        <span>{formatDateTime(doc.addedAt)}</span>
-      </div>
-      <div className="doc-actions">
-        <button type="button" className="clear-button" onClick={() => downloadDocument(doc)}>
-          Скачать
+      <div className="doc-row-main">
+        <span className="doc-icon">{fileIcon(doc)}</span>
+        <button type="button" className="doc-name" onClick={() => openDocument(doc.id)} title="Открыть">
+          {doc.name}
         </button>
-        {isAdmin ? (
-          <button type="button" className="delete-button" onClick={confirmRemove}>
-            Удалить
+        <div className="doc-meta">
+          {showCompany ? <span>{doc.counterparty || 'Без контрагента'}</span> : null}
+          {showStage && doc.stage ? <span className="doc-stage-tag">{doc.stage}</span> : null}
+          <span>{formatSize(doc.size)}</span>
+          <span>{formatDateTime(doc.addedAt)}</span>
+        </div>
+        <div className="doc-actions">
+          {isAdmin ? (
+            <button type="button" className="doc-icon-btn" title="Переименовать" onClick={renameDoc}>
+              ✎
+            </button>
+          ) : null}
+          <button type="button" className="clear-button" onClick={() => downloadDocument(doc)}>
+            Скачать
           </button>
-        ) : null}
+          {isAdmin ? (
+            <button type="button" className="delete-button" onClick={confirmRemove}>
+              Удалить
+            </button>
+          ) : null}
+        </div>
       </div>
+      <DocNote doc={doc} isAdmin={isAdmin} />
     </div>
+  );
+}
+
+// Примечание к документу: админ редактирует (сохранение по уходу с поля),
+// просмотрщик видит текст, только если он есть.
+function DocNote({ doc, isAdmin }: { doc: DocMeta; isAdmin: boolean }) {
+  const [text, setText] = useState(doc.note ?? '');
+
+  // Подхватываем внешние изменения (например, после переоткрытия модалки).
+  useEffect(() => {
+    setText(doc.note ?? '');
+  }, [doc.note]);
+
+  if (!isAdmin) {
+    return doc.note ? <p className="doc-note-text">{doc.note}</p> : null;
+  }
+
+  const commit = () => {
+    if (text !== (doc.note ?? '')) updateDocument(doc.id, { note: text });
+  };
+
+  return (
+    <textarea
+      className="doc-note-input"
+      rows={1}
+      value={text}
+      placeholder="✎ Примечание к документу…"
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+    />
   );
 }
 
@@ -190,6 +234,9 @@ function DocModal({
 // этапу / дате (история), загрузка на уровне компании.
 export function Documents({ items, stages, isAdmin }: { items: Item[]; stages: string[]; isAdmin: boolean }) {
   const docs = useDocs();
+  const [view, setView] = useState<'list' | 'charts'>('list');
+  const [pwOpen, setPwOpen] = useState(false);
+  const [range, setRange] = useState<Range>(EMPTY_RANGE);
   const [groupBy, setGroupBy] = useState<'company' | 'stage' | 'date'>('company');
   const [filterCompany, setFilterCompany] = useState('Все');
   const [filterStage, setFilterStage] = useState('Все');
@@ -250,6 +297,19 @@ export function Documents({ items, stages, isAdmin }: { items: Item[]; stages: s
     return keys.map((key) => ({ key, docs: map.get(key)! }));
   }, [filtered, groupBy, stageOrder]);
 
+  // Аналитика: документы по дате загрузки в выбранном периоде.
+  const analytics = useMemo(() => {
+    const inWindow = docs.filter((d) => (isRangeActive(range) ? inRange(d.addedAt, range) : true));
+    const totalSize = inWindow.reduce((sum, d) => sum + (d.size || 0), 0);
+    return {
+      total: inWindow.length,
+      totalSize,
+      byCompany: countBy(inWindow, (d) => d.counterparty, 'Без контрагента').slice(0, 10),
+      byStage: countBy(inWindow, (d) => d.stage, 'Без этапа'),
+      trend: trendFromDates(inWindow.map((d) => d.addedAt)),
+    };
+  }, [docs, range]);
+
   const upload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setBusy(true);
@@ -264,6 +324,64 @@ export function Documents({ items, stages, isAdmin }: { items: Item[]; stages: s
 
   return (
     <>
+      <div className="card tasks-toolbar">
+        <div className="mode-switch">
+          <button
+            type="button"
+            className={view === 'list' ? 'toggle-button active' : 'toggle-button'}
+            onClick={() => setView('list')}
+          >
+            Список
+          </button>
+          <button
+            type="button"
+            className={view === 'charts' ? 'toggle-button active' : 'toggle-button'}
+            onClick={() => setView('charts')}
+          >
+            Диаграммы
+          </button>
+        </div>
+      </div>
+
+      {pwOpen ? <PasswordZipDialog onClose={() => setPwOpen(false)} /> : null}
+
+      {view === 'charts' ? (
+        <section className="card">
+          <h2>Диаграммы документов</h2>
+          <RangeFilter range={range} onChange={setRange} />
+          <KpiRow
+            items={[
+              { label: 'Документов', value: analytics.total },
+              { label: 'Объём', value: formatSize(analytics.totalSize), tone: 'accent' },
+              { label: 'Контрагентов', value: analytics.byCompany.length },
+              { label: 'Этапов', value: analytics.byStage.length },
+            ]}
+          />
+          <div className="charts-grid">
+            <BarChart title="По контрагентам" subtitle="топ-10" data={analytics.byCompany} />
+            <BarChart
+              title="По этапам"
+              data={analytics.byStage.map((d, i) => ({ ...d, color: stageColor(i) }))}
+            />
+          </div>
+          <div className="charts-grid" style={{ marginTop: 16 }}>
+            <TrendChart title="Загрузки по месяцам" data={analytics.trend} color="#0ea5e9" />
+          </div>
+        </section>
+      ) : (
+      <>
+      {isAdmin ? (
+        <div className="card doc-secure-bar">
+          <div>
+            <strong>Архив документов</strong>
+            <p className="hint">Скачать все файлы одним ZIP, зашифрованным паролем (стандарт AES-256).</p>
+          </div>
+          <button type="button" className="primary-button" onClick={() => setPwOpen(true)} disabled={docs.length === 0}>
+            🔒 Зашифрованный ZIP
+          </button>
+        </div>
+      ) : null}
+
       {isAdmin ? (
         <section className="card">
           <h2>Загрузить документ к компании</h2>
@@ -398,6 +516,102 @@ export function Documents({ items, stages, isAdmin }: { items: Item[]; stages: s
           </div>
         )}
       </section>
+      </>
+      )}
     </>
+  );
+}
+
+// Диалог пароля для зашифрованного ZIP. Архив собирается стандартом AES-256
+// и открывается любым архиватором (WinRAR/7-Zip) по этому же паролю.
+function PasswordZipDialog({ onClose }: { onClose: () => void }) {
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const run = async () => {
+    if (pw.length < 4) {
+      setError('Пароль слишком короткий — минимум 4 символа.');
+      return;
+    }
+    if (pw !== pw2) {
+      setError('Пароли не совпадают.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const { exportDocumentFilesEncrypted } = await import('./export');
+      const count = await exportDocumentFilesEncrypted(pw);
+      if (count === 0) {
+        setError('Документов для выгрузки нет.');
+        setBusy(false);
+        return;
+      }
+      onClose();
+    } catch {
+      setError('Не удалось создать архив.');
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="doc-overlay" onClick={busy ? undefined : onClose}>
+      <div className="doc-dialog pw-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="doc-dialog-head">
+          <div>
+            <h3>🔒 Зашифрованный архив</h3>
+            <p className="hint">Все документы будут упакованы в один ZIP с шифрованием AES-256.</p>
+          </div>
+          <button type="button" className="doc-close" onClick={onClose} disabled={busy} title="Закрыть">
+            ✕
+          </button>
+        </div>
+
+        <div className="pw-fields">
+          <label>
+            Пароль
+            <input
+              type={show ? 'text' : 'password'}
+              value={pw}
+              autoFocus
+              onChange={(e) => setPw(e.target.value)}
+              placeholder="Придумайте пароль"
+            />
+          </label>
+          <label>
+            Повторите пароль
+            <input
+              type={show ? 'text' : 'password'}
+              value={pw2}
+              onChange={(e) => setPw2(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !busy) run();
+              }}
+              placeholder="Ещё раз"
+            />
+          </label>
+          <label className="pw-show">
+            <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+            Показать пароль
+          </label>
+        </div>
+
+        {error ? <p className="pw-error">{error}</p> : null}
+        <p className="hint">Пароль нигде не сохраняется — запишите его. Без пароля архив не открыть.</p>
+
+        <div className="pw-actions">
+          <button type="button" className="clear-button" onClick={onClose} disabled={busy}>
+            Отмена
+          </button>
+          <button type="button" className="primary-button" onClick={run} disabled={busy || !pw || !pw2}>
+            {busy ? 'Шифрование…' : 'Создать ZIP'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

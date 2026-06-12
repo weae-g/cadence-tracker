@@ -6,6 +6,7 @@
 // файл подгружается из IndexedDB только при открытии/скачивании.
 
 import { useSyncExternalStore } from 'react';
+import { safeSetItem } from './safeStorage';
 
 // Метаданные одного документа. Привязан к письму (itemId), компании
 // (counterparty) и этапу (stage) — любого из них достаточно для просмотра.
@@ -18,6 +19,7 @@ export type DocMeta = {
   mime: string; // MIME-тип
   size: number; // размер в байтах
   addedAt: string; // ISO-метка времени загрузки
+  note: string; // примечание администратора (необязательно)
 };
 
 const DOCS_KEY = 'resolve-table-docs-v1';
@@ -91,6 +93,18 @@ function deleteBlob(id: string): Promise<void> {
   );
 }
 
+function clearBlobs(): Promise<void> {
+  return openDb().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.objectStore(STORE).clear();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      }),
+  );
+}
+
 // --- Метаданные (localStorage) + общий стор для React ---
 
 function load(): DocMeta[] {
@@ -99,7 +113,10 @@ function load(): DocMeta[] {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((d): d is DocMeta => d && typeof d.id === 'string');
+    return parsed
+      .filter((d): d is DocMeta => d && typeof d.id === 'string')
+      // у документов из старых версий поля note нет — подставляем пустое.
+      .map((d) => ({ ...d, note: typeof d.note === 'string' ? d.note : '' }));
   } catch {
     return [];
   }
@@ -110,7 +127,7 @@ const listeners = new Set<() => void>();
 
 function commit(next: DocMeta[]) {
   cache = next;
-  localStorage.setItem(DOCS_KEY, JSON.stringify(next));
+  safeSetItem(DOCS_KEY, JSON.stringify(next));
   listeners.forEach((fn) => fn());
 }
 
@@ -145,6 +162,7 @@ export async function addDocument(
     mime: file.type,
     size: file.size,
     addedAt: new Date().toISOString(),
+    note: '',
   };
   commit([meta, ...cache]);
 }
@@ -175,6 +193,16 @@ export async function getDocumentFiles(): Promise<{ meta: DocMeta; blob: Blob }[
     if (blob) result.push({ meta, blob });
   }
   return result;
+}
+
+// Полная замена всех документов (для восстановления из резервной копии):
+// стираем старые бинарники, кладём новые, перезаписываем метаданные.
+export async function restoreDocuments(metas: DocMeta[], blobs: { id: string; blob: Blob }[]): Promise<void> {
+  await clearBlobs();
+  for (const { id, blob } of blobs) {
+    await putBlob(id, blob);
+  }
+  commit(metas.map((m) => ({ ...m, note: typeof m.note === 'string' ? m.note : '' })));
 }
 
 export async function openDocument(id: string): Promise<void> {

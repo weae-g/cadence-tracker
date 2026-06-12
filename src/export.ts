@@ -3,10 +3,14 @@
 // Сами файлы документов выгружаются отдельной кнопкой (ZIP), т.к. это бинарь.
 
 import * as XLSX from 'xlsx';
+import { BlobReader, BlobWriter, ZipWriter, configure } from '@zip.js/zip.js';
 import { Item } from './types';
 import { loadInteractions, loadTasks, today } from './storage';
-import { getDocs, getDocumentFiles, formatSize } from './docs';
+import { getDocs, getDocumentFiles, formatSize, DocMeta } from './docs';
 import { buildZip, ZipEntry } from './zip';
+
+// Без веб-воркеров: надёжнее в собранном бандле, без отдельных worker-файлов.
+configure({ useWebWorkers: false });
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
@@ -131,7 +135,7 @@ export function exportToExcel(items: Item[], stages: string[]) {
 
   // Документы (перечень; сами файлы — кнопкой «Скачать файлы»)
   addSheet(wb, 'Документы', [
-    ['Имя файла', 'Тип', 'Размер', 'Контрагент', 'Этап', 'Письмо', 'Загружен'],
+    ['Имя файла', 'Тип', 'Размер', 'Контрагент', 'Этап', 'Письмо', 'Загружен', 'Примечание'],
     ...docs.map((d) => {
       const item = items.find((i) => i.id === d.itemId);
       return [
@@ -142,6 +146,7 @@ export function exportToExcel(items: Item[], stages: string[]) {
         d.stage,
         item ? item.subject || item.counterparty : '',
         dateTime(d.addedAt),
+        d.note || '',
       ];
     }),
   ]);
@@ -160,27 +165,50 @@ function sanitize(name: string): string {
   return (name || 'без_имени').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'без_имени';
 }
 
-// Выгрузка всех файлов документов одним ZIP. Раскладывает по папкам-компаниям,
-// разводит совпадающие имена суффиксом. Возвращает число упакованных файлов.
+// Раскладка по папкам-компаниям с разведением совпадающих имён суффиксом.
+// Имена документов сохраняются как есть (с учётом переименований пользователя).
+function zipPaths(files: { meta: DocMeta; blob: Blob }[]): { path: string; blob: Blob }[] {
+  const used = new Map<string, number>();
+  return files.map(({ meta, blob }) => {
+    const folder = sanitize(meta.counterparty || 'Без контрагента');
+    let path = `${folder}/${sanitize(meta.name)}`;
+    const seen = used.get(path) ?? 0;
+    used.set(path, seen + 1);
+    if (seen > 0) {
+      const dot = path.lastIndexOf('.');
+      path = dot > folder.length ? `${path.slice(0, dot)} (${seen})${path.slice(dot)}` : `${path} (${seen})`;
+    }
+    return { path, blob };
+  });
+}
+
+// Выгрузка всех файлов документов одним ZIP (без шифрования).
 export async function exportDocumentFiles(): Promise<number> {
   const files = await getDocumentFiles();
   if (files.length === 0) return 0;
 
-  const used = new Map<string, number>();
   const entries: ZipEntry[] = [];
-  for (const { meta, blob } of files) {
-    const folder = sanitize(meta.counterparty || 'Без контрагента');
-    let name = `${folder}/${sanitize(meta.name)}`;
-    const seen = used.get(name) ?? 0;
-    used.set(name, seen + 1);
-    if (seen > 0) {
-      const dot = name.lastIndexOf('.');
-      name =
-        dot > folder.length ? `${name.slice(0, dot)} (${seen})${name.slice(dot)}` : `${name} (${seen})`;
-    }
-    entries.push({ name, data: new Uint8Array(await blob.arrayBuffer()) });
+  for (const { path, blob } of zipPaths(files)) {
+    entries.push({ name: path, data: new Uint8Array(await blob.arrayBuffer()) });
   }
 
   download(buildZip(entries), `resolve-table-files-${today()}.zip`);
+  return files.length;
+}
+
+// Зашифрованный архив: стандартный ZIP с AES-256, открывается в WinRAR/7-Zip по паролю.
+export async function exportDocumentFilesEncrypted(password: string): Promise<number> {
+  const files = await getDocumentFiles();
+  if (files.length === 0) return 0;
+
+  const zipWriter = new ZipWriter(new BlobWriter('application/zip'), {
+    password,
+    encryptionStrength: 3, // 3 = AES-256
+  });
+  for (const { path, blob } of zipPaths(files)) {
+    await zipWriter.add(path, new BlobReader(blob));
+  }
+  const blob = await zipWriter.close();
+  download(blob, `resolve-table-files-secure-${today()}.zip`);
   return files.length;
 }
