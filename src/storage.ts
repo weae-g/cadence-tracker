@@ -7,6 +7,8 @@ const STAGES_KEY = 'resolve-table-stages-v1';
 const TASKS_KEY = 'resolve-table-tasks-v1';
 const INTERACTIONS_KEY = 'resolve-table-interactions-v1';
 const INTERACTION_KINDS_KEY = 'resolve-table-interaction-kinds-v1';
+const PROJECTS_KEY = 'resolve-table-projects-v1';
+const PROJECT_META_KEY = 'resolve-table-project-meta-v1';
 
 export const today = () => new Date().toISOString().slice(0, 10);
 export const now = () => new Date().toISOString();
@@ -48,7 +50,7 @@ export function saveStages(stages: string[]) {
 
 // --- Записи ---
 
-export function defaultItem(initialStage: string = DEFAULT_STAGES[0]): Item {
+export function defaultItem(initialStage: string = DEFAULT_STAGES[0], project = ''): Item {
   const stamp = now();
   return {
     id: uid(),
@@ -62,6 +64,7 @@ export function defaultItem(initialStage: string = DEFAULT_STAGES[0]): Item {
     replyDate: '',
     owner: '',
     note: '',
+    project,
     history: [{ stage: initialStage, at: stamp }],
   };
 }
@@ -137,7 +140,7 @@ export function withStageChange(item: Item, status: string): Item {
 
 // --- Задачи ---
 
-export function defaultTask(): Task {
+export function defaultTask(project = ''): Task {
   return {
     id: uid(),
     title: '',
@@ -147,6 +150,7 @@ export function defaultTask(): Task {
     result: '',
     completedDate: '',
     createdAt: now(),
+    project,
   };
 }
 
@@ -167,7 +171,7 @@ export function saveTasks(tasks: Task[]) {
 
 // --- Взаимодействия (встречи, совещания, эксперименты и т.п.) ---
 
-export function defaultInteraction(): Interaction {
+export function defaultInteraction(project = ''): Interaction {
   return {
     id: uid(),
     kind: DEFAULT_INTERACTION_KINDS[0],
@@ -177,6 +181,7 @@ export function defaultInteraction(): Interaction {
     participants: '',
     note: '',
     createdAt: now(),
+    project,
   };
 }
 
@@ -216,4 +221,51 @@ export function saveInteractionKinds(kinds: string[]) {
   safeSetItem(INTERACTION_KINDS_KEY, JSON.stringify(kinds));
 }
 
-export { STORAGE_KEY, STAGES_KEY, TASKS_KEY, INTERACTIONS_KEY, INTERACTION_KINDS_KEY };
+// --- Проекты (метка для разделения данных; редактируемый список) ---
+
+export function loadProjects(): string[] {
+  const stored = localStorage.getItem(PROJECTS_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.every((s) => typeof s === 'string')) return parsed;
+    } catch {
+      /* вернём пустой */
+    }
+  }
+  return [];
+}
+
+export function saveProjects(list: string[]) {
+  safeSetItem(PROJECTS_KEY, JSON.stringify(list));
+}
+
+// Оформление/состояние проектов: цвет, иконка (эмодзи), архив.
+export type ProjectMeta = Record<string, { color?: string; icon?: string; archived?: boolean }>;
+
+export function loadProjectMeta(): ProjectMeta {
+  const stored = localStorage.getItem(PROJECT_META_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as ProjectMeta;
+    } catch {
+      /* вернём пустой */
+    }
+  }
+  return {};
+}
+
+export function saveProjectMeta(meta: ProjectMeta) {
+  safeSetItem(PROJECT_META_KEY, JSON.stringify(meta));
+}
+
+export {
+  STORAGE_KEY,
+  STAGES_KEY,
+  TASKS_KEY,
+  INTERACTIONS_KEY,
+  INTERACTION_KINDS_KEY,
+  PROJECTS_KEY,
+  PROJECT_META_KEY,
+};

@@ -20,6 +20,7 @@ export type DocMeta = {
   size: number; // размер в байтах
   addedAt: string; // ISO-метка времени загрузки
   note: string; // примечание администратора (необязательно)
+  project: string; // проект (для разделения данных; '' — без проекта)
 };
 
 const DOCS_KEY = 'resolve-table-docs-v1';
@@ -115,8 +116,12 @@ function load(): DocMeta[] {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter((d): d is DocMeta => d && typeof d.id === 'string')
-      // у документов из старых версий поля note нет — подставляем пустое.
-      .map((d) => ({ ...d, note: typeof d.note === 'string' ? d.note : '' }));
+      // у документов из старых версий полей note/project нет — подставляем пустые.
+      .map((d) => ({
+        ...d,
+        note: typeof d.note === 'string' ? d.note : '',
+        project: typeof d.project === 'string' ? d.project : '',
+      }));
   } catch {
     return [];
   }
@@ -149,7 +154,7 @@ export function getDocs(): DocMeta[] {
 
 export async function addDocument(
   file: File,
-  attach: { itemId: string; counterparty: string; stage: string },
+  attach: { itemId: string; counterparty: string; stage: string; project?: string },
 ): Promise<void> {
   const id = uid();
   await putBlob(id, file);
@@ -163,6 +168,7 @@ export async function addDocument(
     size: file.size,
     addedAt: new Date().toISOString(),
     note: '',
+    project: (attach.project ?? '').trim(),
   };
   commit([meta, ...cache]);
 }
@@ -202,7 +208,13 @@ export async function restoreDocuments(metas: DocMeta[], blobs: { id: string; bl
   for (const { id, blob } of blobs) {
     await putBlob(id, blob);
   }
-  commit(metas.map((m) => ({ ...m, note: typeof m.note === 'string' ? m.note : '' })));
+  commit(
+    metas.map((m) => ({
+      ...m,
+      note: typeof m.note === 'string' ? m.note : '',
+      project: typeof m.project === 'string' ? m.project : '',
+    })),
+  );
 }
 
 // Blob документа для встроенного предпросмотра (вызывающий сам создаёт/отзывает URL).

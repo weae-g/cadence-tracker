@@ -82,6 +82,7 @@ export function exportToExcel(items: Item[], stages: string[]) {
   addSheet(wb, 'Письма', [
     [
       '№',
+      'Проект',
       'Дата отправки',
       'Контрагент',
       'Адресат / контакт',
@@ -98,6 +99,7 @@ export function exportToExcel(items: Item[], stages: string[]) {
     ],
     ...items.map((it, idx) => [
       idx + 1,
+      it.project || '',
       it.sentDate,
       it.counterparty,
       it.contact,
@@ -116,14 +118,15 @@ export function exportToExcel(items: Item[], stages: string[]) {
 
   // Взаимодействия
   addSheet(wb, 'Взаимодействия', [
-    ['Тип', 'Дата', 'Контрагент', 'Кратко: о чём', 'Участники', 'Примечание'],
-    ...interactions.map((i) => [i.kind, i.date, i.counterparty, i.title, i.participants, i.note]),
+    ['Проект', 'Тип', 'Дата', 'Контрагент', 'Кратко: о чём', 'Участники', 'Примечание'],
+    ...interactions.map((i) => [i.project || '', i.kind, i.date, i.counterparty, i.title, i.participants, i.note]),
   ]);
 
   // Задачи
   addSheet(wb, 'Задачи', [
-    ['Задача', 'Описание', 'Срок', 'Статус', 'Результат', 'Дата выполнения'],
+    ['Проект', 'Задача', 'Описание', 'Срок', 'Статус', 'Результат', 'Дата выполнения'],
     ...tasks.map((t) => [
+      t.project || '',
       t.title,
       t.description,
       t.dueDate,
@@ -135,10 +138,11 @@ export function exportToExcel(items: Item[], stages: string[]) {
 
   // Документы (перечень; сами файлы — кнопкой «Скачать файлы»)
   addSheet(wb, 'Документы', [
-    ['Имя файла', 'Тип', 'Размер', 'Контрагент', 'Этап', 'Письмо', 'Загружен', 'Примечание'],
+    ['Проект', 'Имя файла', 'Тип', 'Размер', 'Контрагент', 'Этап', 'Письмо', 'Загружен', 'Примечание'],
     ...docs.map((d) => {
       const item = items.find((i) => i.id === d.itemId);
       return [
+        d.project || '',
         d.name,
         d.mime || '—',
         formatSize(d.size),

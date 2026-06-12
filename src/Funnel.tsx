@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { Item, stageColor } from './types';
+import { DownloadButton } from './charts';
 
 type Props = { items: Item[]; stages: string[] };
 
@@ -71,15 +72,20 @@ export function Funnel({ items, stages }: Props) {
     return Math.max(28, (t / maxThroughput) * 200);
   };
 
+  const cardRef = useRef<HTMLDivElement>(null);
+
   return (
-    <div className="funnel-card">
+    <div className="funnel-card" ref={cardRef}>
       <div className="gantt-header">
-        <h3>Воронка переходов</h3>
-        <span>
-          {totalTransitions === 0
-            ? 'Переходов между стадиями пока не было'
-            : `${totalTransitions} переходов между стадиями`}
-        </span>
+        <div className="chart-head-titles">
+          <h3>Воронка переходов</h3>
+          <span>
+            {totalTransitions === 0
+              ? 'Переходов между стадиями пока не было'
+              : `${totalTransitions} переходов между стадиями`}
+          </span>
+        </div>
+        <DownloadButton targetRef={cardRef} name="Воронка переходов" />
       </div>
 
       <div className="funnel-visual">

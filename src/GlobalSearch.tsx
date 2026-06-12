@@ -3,7 +3,7 @@ import { Item } from './types';
 import { loadInteractions, loadTasks } from './storage';
 import { DocMeta } from './docs';
 
-export type Section = 'dashboard' | 'letters' | 'interactions' | 'tasks' | 'documents';
+export type Section = 'dashboard' | 'letters' | 'interactions' | 'tasks' | 'documents' | 'help';
 
 type Hit = { id: string; primary: string; secondary: string };
 
@@ -15,11 +15,13 @@ export function GlobalSearch({
   query,
   items,
   docs,
+  project,
   onJump,
 }: {
   query: string;
   items: Item[];
   docs: DocMeta[];
+  project: string;
   onJump: (section: Section) => void;
 }) {
   const q = query.trim().toLowerCase();
@@ -27,9 +29,10 @@ export function GlobalSearch({
   const groups = useMemo(() => {
     if (!q) return null;
     const has = (...parts: string[]) => parts.join(' ').toLowerCase().includes(q);
+    const inProj = (p: string) => project === '' || p === project;
 
     const letters: Hit[] = items
-      .filter((i) => has(i.counterparty, i.contact, i.channel, i.topic, i.subject, i.owner, i.note, i.status))
+      .filter((i) => inProj(i.project) && has(i.counterparty, i.contact, i.channel, i.topic, i.subject, i.owner, i.note, i.status))
       .map((i) => ({
         id: i.id,
         primary: i.subject || i.topic || 'Без темы',
@@ -37,7 +40,7 @@ export function GlobalSearch({
       }));
 
     const interactions: Hit[] = loadInteractions()
-      .filter((i) => has(i.kind, i.counterparty, i.title, i.participants, i.note))
+      .filter((i) => inProj(i.project) && has(i.kind, i.counterparty, i.title, i.participants, i.note))
       .map((i) => ({
         id: i.id,
         primary: i.title || 'Без темы',
@@ -45,7 +48,7 @@ export function GlobalSearch({
       }));
 
     const tasks: Hit[] = loadTasks()
-      .filter((t) => has(t.title, t.description, t.result))
+      .filter((t) => inProj(t.project) && has(t.title, t.description, t.result))
       .map((t) => ({
         id: t.id,
         primary: t.title || 'Без названия',
@@ -53,7 +56,7 @@ export function GlobalSearch({
       }));
 
     const documents: Hit[] = docs
-      .filter((d) => has(d.name, d.counterparty, d.stage, d.note))
+      .filter((d) => inProj(d.project) && has(d.name, d.counterparty, d.stage, d.note))
       .map((d) => ({
         id: d.id,
         primary: d.name,
@@ -66,7 +69,7 @@ export function GlobalSearch({
       { section: 'tasks' as Section, title: 'Задачи', hits: tasks },
       { section: 'documents' as Section, title: 'Документы', hits: documents },
     ].filter((g) => g.hits.length > 0);
-  }, [q, items, docs]);
+  }, [q, items, docs, project]);
 
   if (!groups) return null;
   const total = groups.reduce((sum, g) => sum + g.hits.length, 0);

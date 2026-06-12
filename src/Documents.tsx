@@ -247,7 +247,7 @@ function DocModal({
     setBusy(true);
     try {
       for (const file of Array.from(files)) {
-        await addDocument(file, { itemId: item.id, counterparty: item.counterparty, stage });
+        await addDocument(file, { itemId: item.id, counterparty: item.counterparty, stage, project: item.project });
       }
     } finally {
       setBusy(false);
@@ -311,8 +311,18 @@ function DocModal({
 
 // Глобальный браузер всех документов: фильтры, группировка по компании /
 // этапу / дате (история), загрузка на уровне компании.
-export function Documents({ items, stages, isAdmin }: { items: Item[]; stages: string[]; isAdmin: boolean }) {
-  const docs = useDocs();
+export function Documents({
+  items,
+  stages,
+  isAdmin,
+  project,
+}: {
+  items: Item[];
+  stages: string[];
+  isAdmin: boolean;
+  project: string;
+}) {
+  const docs = useDocs().filter((d) => project === '' || d.project === project);
   const [view, setView] = useState<'list' | 'charts'>('list');
   const [pwOpen, setPwOpen] = useState(false);
   const [range, setRange] = useState<Range>(EMPTY_RANGE);
@@ -394,7 +404,7 @@ export function Documents({ items, stages, isAdmin }: { items: Item[]; stages: s
     setBusy(true);
     try {
       for (const file of Array.from(files)) {
-        await addDocument(file, { itemId: '', counterparty: upCompany, stage: upStage });
+        await addDocument(file, { itemId: '', counterparty: upCompany, stage: upStage, project });
       }
     } finally {
       setBusy(false);

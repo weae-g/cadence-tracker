@@ -10,11 +10,34 @@ import {
   listUsers,
   updateUser,
 } from './auth';
+import { ProjectMeta } from './storage';
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : 'Ошибка');
 
-// Диалог аккаунта: смена своего пароля + (для admin) управление пользователями.
-export function AccountDialog({ session, onClose }: { session: Session; onClose: () => void }) {
+// Диалог аккаунта: смена своего пароля + (для admin) пользователи и проекты.
+export function AccountDialog({
+  session,
+  projects,
+  projectMeta,
+  onAddProject,
+  onRenameProject,
+  onDeleteProject,
+  onSetProjectColor,
+  onSetProjectIcon,
+  onToggleArchiveProject,
+  onClose,
+}: {
+  session: Session;
+  projects: string[];
+  projectMeta: ProjectMeta;
+  onAddProject: (name: string) => void;
+  onRenameProject: (from: string, to: string) => void;
+  onDeleteProject: (name: string) => void;
+  onSetProjectColor: (name: string, color: string) => void;
+  onSetProjectIcon: (name: string, icon: string) => void;
+  onToggleArchiveProject: (name: string) => void;
+  onClose: () => void;
+}) {
   return createPortal(
     <div className="doc-overlay" onClick={onClose}>
       <div className="doc-dialog account-dialog" onClick={(e) => e.stopPropagation()}>
@@ -31,10 +54,114 @@ export function AccountDialog({ session, onClose }: { session: Session; onClose:
         </div>
 
         <PasswordSection />
+        {session.role === 'admin' ? (
+          <ProjectsSection
+            projects={projects}
+            meta={projectMeta}
+            onAdd={onAddProject}
+            onRename={onRenameProject}
+            onDelete={onDeleteProject}
+            onSetColor={onSetProjectColor}
+            onSetIcon={onSetProjectIcon}
+            onToggleArchive={onToggleArchiveProject}
+          />
+        ) : null}
         {session.role === 'admin' ? <UsersSection currentUser={session.username} /> : null}
       </div>
     </div>,
     document.body,
+  );
+}
+
+function ProjectsSection({
+  projects,
+  meta,
+  onAdd,
+  onRename,
+  onDelete,
+  onSetColor,
+  onSetIcon,
+  onToggleArchive,
+}: {
+  projects: string[];
+  meta: ProjectMeta;
+  onAdd: (name: string) => void;
+  onRename: (from: string, to: string) => void;
+  onDelete: (name: string) => void;
+  onSetColor: (name: string, color: string) => void;
+  onSetIcon: (name: string, icon: string) => void;
+  onToggleArchive: (name: string) => void;
+}) {
+  const [name, setName] = useState('');
+
+  const rename = (p: string) => {
+    const next = window.prompt(`Новое имя проекта «${p}»:`, p)?.trim();
+    if (next && next !== p) onRename(p, next);
+  };
+  const del = (p: string) => {
+    if (window.confirm(`Удалить проект «${p}»? Его записи останутся, но станут «без проекта».`)) onDelete(p);
+  };
+  const add = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    onAdd(name.trim());
+    setName('');
+  };
+
+  return (
+    <div className="account-section">
+      <h4>Проекты</h4>
+      <p className="hint">
+        Цвет/иконка — оформление; «В архив» прячет проект из переключателя в шапке (данные остаются). Переименование и
+        удаление затрагивают все разделы и перезагружают страницу.
+      </p>
+      {projects.length === 0 ? (
+        <p className="empty-state">Проектов пока нет.</p>
+      ) : (
+        <div className="user-list">
+          {projects.map((p) => {
+            const m = meta[p] || {};
+            return (
+              <div key={p} className={m.archived ? 'project-row archived' : 'project-row'}>
+                <input
+                  className="project-color"
+                  type="color"
+                  value={m.color || '#3b82f6'}
+                  onChange={(e) => onSetColor(p, e.target.value)}
+                  title="Цвет"
+                />
+                <input
+                  className="project-icon"
+                  value={m.icon || ''}
+                  onChange={(e) => onSetIcon(p, e.target.value.slice(0, 2))}
+                  placeholder="🎯"
+                  title="Иконка (эмодзи)"
+                />
+                <span className="user-name">
+                  {p}
+                  {m.archived ? ' · в архиве' : ''}
+                </span>
+                <button type="button" className="clear-button" onClick={() => onToggleArchive(p)}>
+                  {m.archived ? 'Из архива' : 'В архив'}
+                </button>
+                <button type="button" className="clear-button" onClick={() => rename(p)}>
+                  Переименовать
+                </button>
+                <button type="button" className="delete-button" onClick={() => del(p)}>
+                  Удалить
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <form className="user-add" onSubmit={add}>
+        <input placeholder="Новый проект" value={name} onChange={(e) => setName(e.target.value)} />
+        <button type="submit" className="primary-button" disabled={!name.trim()}>
+          Добавить
+        </button>
+      </form>
+    </div>
   );
 }
 

@@ -14,6 +14,8 @@ import {
   TASKS_KEY,
   INTERACTIONS_KEY,
   INTERACTION_KINDS_KEY,
+  PROJECTS_KEY,
+  PROJECT_META_KEY,
 } from './storage';
 
 // Получить снимок данных с сервера. null — если данных ещё нет или ошибка.
@@ -58,6 +60,8 @@ export function dataSignature(): string {
     ls(TASKS_KEY),
     ls(INTERACTIONS_KEY),
     ls(INTERACTION_KINDS_KEY),
+    ls(PROJECTS_KEY),
+    ls(PROJECT_META_KEY),
     docsMeta,
   ].join('§');
 }

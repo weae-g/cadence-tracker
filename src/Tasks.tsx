@@ -2,7 +2,24 @@ import { useEffect, useMemo, useState } from 'react';
 import { Task } from './types';
 import { defaultTask, loadTasks, saveTasks, today } from './storage';
 import { MonthlyReport } from './MonthlyReport';
-import { BarChart, EMPTY_RANGE, KpiRow, Range, RangeFilter, TrendChart, inRange, isRangeActive, trendFromDates } from './charts';
+import {
+  BarChart,
+  EMPTY_RANGE,
+  GanttChart,
+  GanttRow,
+  KpiRow,
+  Range,
+  RangeFilter,
+  TrendChart,
+  inRange,
+  isRangeActive,
+  trendFromDates,
+} from './charts';
+
+const parseDate = (v: string) => {
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
 
 const monthKey = (date: string) => (date ? date.slice(0, 7) : '');
 
@@ -18,7 +35,7 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('ru-RU');
 }
 
-export function Tasks({ isAdmin }: { isAdmin: boolean }) {
+export function Tasks({ isAdmin, project }: { isAdmin: boolean; project: string }) {
   const [tasks, setTasks] = useState<Task[]>(() => loadTasks());
   const [newTask, setNewTask] = useState<Task>(() => defaultTask());
   const [monthFilter, setMonthFilter] = useState('Все');
@@ -30,15 +47,18 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
     saveTasks(tasks);
   }, [tasks]);
 
+  // Задачи активного проекта (при «Все проекты» — все).
+  const scoped = useMemo(() => tasks.filter((t) => project === '' || t.project === project), [tasks, project]);
+
   // Месяцы для отчёта: из сроков и дат выполнения, плюс текущий месяц.
   const reportMonths = useMemo(() => {
     const set = new Set<string>([today().slice(0, 7)]);
-    tasks.forEach((t) => {
+    scoped.forEach((t) => {
       if (t.dueDate) set.add(t.dueDate.slice(0, 7));
       if (t.completedDate) set.add(t.completedDate.slice(0, 7));
     });
     return Array.from(set).sort((a, b) => b.localeCompare(a));
-  }, [tasks]);
+  }, [scoped]);
 
   const monthName = (key: string) => {
     const date = new Date(`${key}-01`);
@@ -48,12 +68,12 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
   };
 
   const active = useMemo(
-    () => tasks.filter((t) => !t.done).sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
-    [tasks],
+    () => scoped.filter((t) => !t.done).sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
+    [scoped],
   );
   const completed = useMemo(
-    () => tasks.filter((t) => t.done).sort((a, b) => b.completedDate.localeCompare(a.completedDate)),
-    [tasks],
+    () => scoped.filter((t) => t.done).sort((a, b) => b.completedDate.localeCompare(a.completedDate)),
+    [scoped],
   );
 
   const monthOptions = useMemo(
@@ -69,7 +89,7 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
   // Аналитика: задача попадает в период, если её срок или дата выполнения внутри него.
   const analytics = useMemo(() => {
     const todayStr = today();
-    const inWindow = tasks.filter((t) =>
+    const inWindow = scoped.filter((t) =>
       isRangeActive(range) ? inRange(t.dueDate, range) || inRange(t.completedDate, range) : true,
     );
     const done = inWindow.filter((t) => t.done);
@@ -84,12 +104,32 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
       rate: total === 0 ? 0 : Math.round((done.length / total) * 100),
       dueTrend: trendFromDates(inWindow.map((t) => t.dueDate)),
       doneTrend: trendFromDates(done.map((t) => t.completedDate)),
+      gantt: inWindow
+        .map((t): GanttRow | null => {
+          // полоса: от постановки (createdAt, иначе срок) до выполнения / срока
+          const start = parseDate(t.createdAt) ?? parseDate(t.dueDate);
+          const endRaw = t.done ? t.completedDate || t.dueDate : t.dueDate;
+          const end = parseDate(endRaw) ?? start;
+          if (!start || !end) return null;
+          const overdue = !t.done && !!t.dueDate && t.dueDate < todayStr;
+          const color = t.done ? '#10b981' : overdue ? '#ef4444' : '#3b82f6';
+          return {
+            id: t.id,
+            label: t.title || 'Без названия',
+            sub: t.done ? 'выполнено' : overdue ? 'просрочено' : 'в работе',
+            start: start < end ? start : end,
+            end: start < end ? end : start,
+            color,
+          };
+        })
+        .filter((r): r is GanttRow => r !== null)
+        .sort((a, b) => a.start.getTime() - b.start.getTime()),
     };
-  }, [tasks, range]);
+  }, [scoped, range]);
 
   const addTask = () => {
     if (!newTask.title.trim()) return;
-    setTasks((prev) => [newTask, ...prev]);
+    setTasks((prev) => [{ ...newTask, project }, ...prev]);
     setNewTask(defaultTask());
   };
 
@@ -153,7 +193,7 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
 
       {mode === 'report' ? (
         <section className="card report-card">
-          <MonthlyReport tasks={tasks} month={reportMonth} />
+          <MonthlyReport tasks={scoped} month={reportMonth} />
         </section>
       ) : mode === 'charts' ? (
         <section className="card">
@@ -179,6 +219,14 @@ export function Tasks({ isAdmin }: { isAdmin: boolean }) {
             />
             <TrendChart title="Поставлено (по сроку)" subtitle="по месяцам" data={analytics.dueTrend} color="#3b82f6" />
             <TrendChart title="Выполнено" subtitle="по месяцам" data={analytics.doneTrend} color="#10b981" />
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <GanttChart
+              title="Гант задач"
+              subtitle={`${analytics.gantt.length} задач · 🟦 в работе · 🟥 просрочено · 🟩 выполнено`}
+              rows={analytics.gantt}
+              empty="Нет задач с датами за выбранный период."
+            />
           </div>
         </section>
       ) : (

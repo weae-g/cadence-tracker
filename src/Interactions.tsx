@@ -10,6 +10,8 @@ import {
 import {
   BarChart,
   EMPTY_RANGE,
+  GanttChart,
+  GanttRow,
   KpiRow,
   Range,
   RangeFilter,
@@ -80,7 +82,7 @@ function KindSelect({
   );
 }
 
-export function Interactions({ isAdmin }: { isAdmin: boolean }) {
+export function Interactions({ isAdmin, project }: { isAdmin: boolean; project: string }) {
   const [list, setList] = useState<Interaction[]>(() => loadInteractions());
   const [kindList, setKindList] = useState<string[]>(() => loadInteractionKinds());
   const [draft, setDraft] = useState<Interaction>(() => ({ ...defaultInteraction(), kind: loadInteractionKinds()[0] }));
@@ -107,16 +109,19 @@ export function Interactions({ isAdmin }: { isAdmin: boolean }) {
     return i === -1 ? kindList.length : i;
   };
 
+  // Записи активного проекта (при «Все проекты» — все).
+  const scoped = useMemo(() => list.filter((i) => project === '' || i.project === project), [list, project]);
+
   // С датой — по убыванию даты; без даты — внизу, по времени создания.
   const sorted = useMemo(
     () =>
-      [...list].sort((a, b) => {
+      [...scoped].sort((a, b) => {
         if (a.date && b.date) return b.date.localeCompare(a.date);
         if (a.date) return -1;
         if (b.date) return 1;
         return b.createdAt.localeCompare(a.createdAt);
       }),
-    [list],
+    [scoped],
   );
 
   const filtered = useMemo(() => {
@@ -134,7 +139,7 @@ export function Interactions({ isAdmin }: { isAdmin: boolean }) {
 
   const add = () => {
     if (!draft.title.trim() && !draft.note.trim()) return;
-    setList((prev) => [draft, ...prev]);
+    setList((prev) => [{ ...draft, project }, ...prev]);
     setDraft({ ...defaultInteraction(), kind: kindList[0] });
   };
 
@@ -185,7 +190,7 @@ export function Interactions({ isAdmin }: { isAdmin: boolean }) {
 
   // Аналитика: считаем по записям, попавшим в выбранный период (без даты — не учитываем).
   const analytics = useMemo(() => {
-    const inWindow = list.filter((i) => (isRangeActive(range) ? inRange(i.date, range) : true));
+    const inWindow = scoped.filter((i) => (isRangeActive(range) ? inRange(i.date, range) : true));
     const dated = inWindow.filter((i) => i.date);
     return {
       total: inWindow.length,
@@ -193,8 +198,23 @@ export function Interactions({ isAdmin }: { isAdmin: boolean }) {
       kinds: countBy(inWindow, (i) => i.kind, 'Без типа'),
       byCompany: countBy(inWindow, (i) => i.counterparty, 'Без контрагента').slice(0, 10),
       trend: trendFromDates(dated.map((i) => i.date)),
+      gantt: dated
+        .map((i): GanttRow | null => {
+          const d = new Date(i.date);
+          if (Number.isNaN(d.getTime())) return null;
+          return {
+            id: i.id,
+            label: i.title || 'Без темы',
+            sub: i.kind,
+            start: d,
+            end: d,
+            color: stageColor(kindList.indexOf(i.kind) === -1 ? kindList.length : kindList.indexOf(i.kind)),
+          };
+        })
+        .filter((r): r is GanttRow => r !== null)
+        .sort((a, b) => a.start.getTime() - b.start.getTime()),
     };
-  }, [list, range]);
+  }, [scoped, range, kindList]);
 
   return (
     <>
@@ -244,6 +264,14 @@ export function Interactions({ isAdmin }: { isAdmin: boolean }) {
           </div>
           <div className="charts-grid" style={{ marginTop: 16 }}>
             <TrendChart title="Динамика по месяцам" subtitle="записи с датой" data={analytics.trend} color="#6366f1" />
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <GanttChart
+              title="Лента взаимодействий"
+              subtitle={`${analytics.gantt.length} с датой`}
+              rows={analytics.gantt}
+              empty="Нет записей с датой за выбранный период."
+            />
           </div>
         </section>
       ) : (
@@ -348,7 +376,7 @@ export function Interactions({ isAdmin }: { isAdmin: boolean }) {
           <section className="card">
             <div className="table-header">
               <div>
-                <h2>Взаимодействия ({list.length})</h2>
+                <h2>Взаимодействия ({scoped.length})</h2>
                 <div className="table-filters">
                   <label>
                     Тип
@@ -373,7 +401,7 @@ export function Interactions({ isAdmin }: { isAdmin: boolean }) {
 
             {filtered.length === 0 ? (
               <p className="empty-state">
-                {list.length === 0 ? 'Записей пока нет.' : 'Нет записей под выбранные фильтры.'}
+                {scoped.length === 0 ? 'Записей пока нет.' : 'Нет записей под выбранные фильтры.'}
               </p>
             ) : (
               <div className="interaction-list">

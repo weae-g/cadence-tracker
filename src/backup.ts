@@ -12,13 +12,18 @@ import {
   loadTasks,
   loadInteractions,
   loadInteractionKinds,
+  loadProjects,
+  loadProjectMeta,
   saveItems,
   saveStages,
   saveTasks,
   saveInteractions,
   saveInteractionKinds,
+  saveProjects,
+  saveProjectMeta,
   normalizeImport,
   today,
+  ProjectMeta,
 } from './storage';
 import { DocMeta, getDocs, getDocumentFiles, restoreDocuments } from './docs';
 
@@ -33,6 +38,8 @@ export type Backup = {
   tasks: Task[];
   interactions: Interaction[];
   interactionKinds: string[];
+  projects: string[];
+  projectMeta: ProjectMeta;
   docs: DocMeta[];
   blobs: BlobEntry[];
 };
@@ -79,6 +86,8 @@ export async function createBackup(): Promise<Backup> {
     tasks: loadTasks(),
     interactions: loadInteractions(),
     interactionKinds: loadInteractionKinds(),
+    projects: loadProjects(),
+    projectMeta: loadProjectMeta(),
     docs: getDocs(),
     blobs,
   };
@@ -105,6 +114,10 @@ export async function applyBackupData(parsed: Partial<Backup>): Promise<void> {
   if (Array.isArray(parsed.tasks)) saveTasks(parsed.tasks as Task[]);
   if (Array.isArray(parsed.interactions)) saveInteractions(parsed.interactions as Interaction[]);
   if (isStrArray(parsed.interactionKinds) && parsed.interactionKinds.length) saveInteractionKinds(parsed.interactionKinds);
+  if (isStrArray(parsed.projects)) saveProjects(parsed.projects);
+  if (parsed.projectMeta && typeof parsed.projectMeta === 'object' && !Array.isArray(parsed.projectMeta)) {
+    saveProjectMeta(parsed.projectMeta);
+  }
 
   // Документы: метаданные + восстановление бинаря в IndexedDB.
   const metas = Array.isArray(parsed.docs) ? (parsed.docs.filter((d) => d && typeof d.id === 'string') as DocMeta[]) : [];
