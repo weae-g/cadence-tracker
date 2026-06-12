@@ -7,11 +7,77 @@ import {
   downloadDocument,
   fileIcon,
   formatSize,
+  getDocumentBlob,
   openDocument,
   removeDocument,
   updateDocument,
   useDocs,
 } from './docs';
+
+// Можно ли показать встроенный предпросмотр (картинка или PDF).
+function canPreview(doc: Pick<DocMeta, 'mime' | 'name'>): boolean {
+  if (doc.mime.startsWith('image/')) return true;
+  if (doc.mime === 'application/pdf') return true;
+  return doc.name.toLowerCase().endsWith('.pdf');
+}
+
+// Оверлей предпросмотра: грузит blob, рисует картинку или PDF во весь экран.
+function PreviewOverlay({ doc, onClose }: { doc: DocMeta; onClose: () => void }) {
+  const [url, setUrl] = useState('');
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let objectUrl = '';
+    let alive = true;
+    getDocumentBlob(doc.id).then((blob) => {
+      if (!alive) return;
+      if (!blob) {
+        setFailed(true);
+        return;
+      }
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    });
+    return () => {
+      alive = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [doc.id]);
+
+  const isImage = doc.mime.startsWith('image/');
+
+  return createPortal(
+    <div className="preview-overlay" onClick={onClose}>
+      <div className="preview-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="preview-head">
+          <strong title={doc.name}>
+            {fileIcon(doc)} {doc.name}
+          </strong>
+          <div className="preview-head-actions">
+            <button type="button" className="clear-button" onClick={() => downloadDocument(doc)}>
+              Скачать
+            </button>
+            <button type="button" className="doc-close" onClick={onClose} title="Закрыть">
+              ✕
+            </button>
+          </div>
+        </div>
+        <div className="preview-body">
+          {failed ? (
+            <p className="empty-state">Файл не найден в хранилище.</p>
+          ) : !url ? (
+            <p className="empty-state">Загрузка…</p>
+          ) : isImage ? (
+            <img src={url} alt={doc.name} className="preview-image" />
+          ) : (
+            <iframe src={url} title={doc.name} className="preview-frame" />
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
 import { BarChart, EMPTY_RANGE, KpiRow, Range, RangeFilter, TrendChart, countBy, inRange, isRangeActive, trendFromDates } from './charts';
 
 function formatDateTime(iso: string) {
@@ -47,11 +113,18 @@ function DocRow({
     const name = window.prompt('Имя документа:', doc.name)?.trim();
     if (name && name !== doc.name) updateDocument(doc.id, { name });
   };
+  const [preview, setPreview] = useState(false);
+  const previewable = canPreview(doc);
   return (
     <div className="doc-row">
       <div className="doc-row-main">
         <span className="doc-icon">{fileIcon(doc)}</span>
-        <button type="button" className="doc-name" onClick={() => openDocument(doc.id)} title="Открыть">
+        <button
+          type="button"
+          className="doc-name"
+          onClick={() => (previewable ? setPreview(true) : openDocument(doc.id))}
+          title={previewable ? 'Предпросмотр' : 'Открыть'}
+        >
           {doc.name}
         </button>
         <div className="doc-meta">
@@ -61,6 +134,11 @@ function DocRow({
           <span>{formatDateTime(doc.addedAt)}</span>
         </div>
         <div className="doc-actions">
+          {previewable ? (
+            <button type="button" className="doc-icon-btn" title="Предпросмотр" onClick={() => setPreview(true)}>
+              👁
+            </button>
+          ) : null}
           {isAdmin ? (
             <button type="button" className="doc-icon-btn" title="Переименовать" onClick={renameDoc}>
               ✎
@@ -77,6 +155,7 @@ function DocRow({
         </div>
       </div>
       <DocNote doc={doc} isAdmin={isAdmin} />
+      {preview ? <PreviewOverlay doc={doc} onClose={() => setPreview(false)} /> : null}
     </div>
   );
 }

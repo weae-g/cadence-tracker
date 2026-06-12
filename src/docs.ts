@@ -205,6 +205,11 @@ export async function restoreDocuments(metas: DocMeta[], blobs: { id: string; bl
   commit(metas.map((m) => ({ ...m, note: typeof m.note === 'string' ? m.note : '' })));
 }
 
+// Blob документа для встроенного предпросмотра (вызывающий сам создаёт/отзывает URL).
+export async function getDocumentBlob(id: string): Promise<Blob | null> {
+  return (await getBlob(id)) ?? null;
+}
+
 export async function openDocument(id: string): Promise<void> {
   const blob = await getBlob(id);
   if (!blob) {

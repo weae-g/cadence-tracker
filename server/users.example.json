@@ -1,0 +1,12 @@
+[
+  {
+    "username": "cadmin",
+    "role": "admin",
+    "passwordHash": "$2a$12$3dHONYx1rNrHixOK90N.julLCZbLEkww15sfqP7XuY2k8RzU4ckTy"
+  },
+  {
+    "username": "cview",
+    "role": "viewer",
+    "passwordHash": "$2a$12$GvfIWvJKRRv69eKT7wyGQObxBxfGtDV9Gp5.ZxJnhC2qCZLkNGzF6"
+  }
+]

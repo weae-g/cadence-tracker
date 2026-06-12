@@ -11,6 +11,9 @@ import { removeDocumentsByItem, useDocs, fileIcon, openDocument } from './docs';
 import { BarChart, EMPTY_RANGE, KpiRow, Range, RangeFilter, TrendChart, countBy, inRange, isRangeActive, trendFromDates } from './charts';
 import { Dashboard } from './Dashboard';
 import { GlobalSearch, Section } from './GlobalSearch';
+import { applyBackupData, createBackup } from './backup';
+import { dataSignature, fetchStore, pushStore } from './sync';
+import { AccountDialog } from './AccountDialog';
 
 const SECTION_KEY = 'resolve-table-section-v1';
 const VIEWMODE_KEY = 'resolve-table-viewmode-v1';
@@ -19,6 +22,66 @@ const SECTION_VALUES: Section[] = ['dashboard', 'letters', 'interactions', 'task
 
 // Колонки таблицы писем, по которым доступна сортировка.
 type SortKey = 'sentDate' | 'counterparty' | 'status' | 'replyDate' | 'wait';
+
+// Управляемые (скрываемые) колонки таблицы писем. «#» и «Удалить» — всегда видны.
+const LETTER_COLUMNS: { key: string; label: string }[] = [
+  { key: 'sentDate', label: 'Дата отправки' },
+  { key: 'counterparty', label: 'Контрагент' },
+  { key: 'contact', label: 'Адресат / контакт' },
+  { key: 'channel', label: 'Email / канал' },
+  { key: 'topic', label: 'Тематика' },
+  { key: 'subject', label: 'Тема письма' },
+  { key: 'status', label: 'Статус ответа' },
+  { key: 'replyDate', label: 'Дата ответа' },
+  { key: 'wait', label: 'Срок, дн.' },
+  { key: 'owner', label: 'Кто отвечает' },
+  { key: 'note', label: 'Примечание' },
+  { key: 'docs', label: 'Док-ты' },
+];
+const COLS_KEY = 'resolve-table-cols-v1';
+
+function loadCols(): Record<string, boolean> {
+  let saved: Record<string, unknown> | null = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(COLS_KEY) || 'null');
+  } catch {
+    saved = null;
+  }
+  const base: Record<string, boolean> = {};
+  LETTER_COLUMNS.forEach((c) => {
+    base[c.key] = saved && typeof saved[c.key] === 'boolean' ? (saved[c.key] as boolean) : true;
+  });
+  return base;
+}
+
+// Меню «Колонки»: чекбоксы видимости столбцов таблицы.
+function ColumnsMenu({
+  cols,
+  onToggle,
+  onReset,
+}: {
+  cols: Record<string, boolean>;
+  onToggle: (key: string) => void;
+  onReset: () => void;
+}) {
+  const hidden = LETTER_COLUMNS.filter((c) => !cols[c.key]).length;
+  return (
+    <details className="columns-menu">
+      <summary className="clear-button">Колонки{hidden ? ` (−${hidden})` : ''}</summary>
+      <div className="columns-popover">
+        {LETTER_COLUMNS.map((c) => (
+          <label key={c.key} className="columns-item">
+            <input type="checkbox" checked={cols[c.key]} onChange={() => onToggle(c.key)} />
+            {c.label}
+          </label>
+        ))}
+        <button type="button" className="clear-button columns-reset" onClick={onReset}>
+          Показать все
+        </button>
+      </div>
+    </details>
+  );
+}
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
@@ -100,6 +163,10 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   const [globalQuery, setGlobalQuery] = useState('');
   const [previewRange, setPreviewRange] = useState<Range>(EMPTY_RANGE);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
+  const [cols, setCols] = useState<Record<string, boolean>>(() => loadCols());
+  const firstRowRef = useRef<HTMLTableRowElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [rowH, setRowH] = useState(44);
   const [viewMode, setViewMode] = useState<'table' | 'view'>(() => {
     const saved = localStorage.getItem(VIEWMODE_KEY);
     if (saved === 'table' || saved === 'view') return saved;
@@ -111,6 +178,7 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   });
   const [filesBusy, setFilesBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const restoreInputRef = useRef<HTMLInputElement>(null);
   const docs = useDocs();
 
@@ -130,6 +198,17 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   useEffect(() => {
     localStorage.setItem(VIEWMODE_KEY, viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    localStorage.setItem(COLS_KEY, JSON.stringify(cols));
+  }, [cols]);
+
+  const toggleCol = (key: string) => setCols((prev) => ({ ...prev, [key]: !prev[key] }));
+  const resetCols = () => {
+    const all: Record<string, boolean> = {};
+    LETTER_COLUMNS.forEach((c) => (all[c.key] = true));
+    setCols(all);
+  };
 
   const counterparties = useMemo(
     () => [...new Set(items.map((item) => item.counterparty.trim() || 'Без контрагента'))],
@@ -192,6 +271,29 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   const toggleSort = (key: SortKey) =>
     setSort((prev) => (prev && prev.key === key ? (prev.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
   const sortMark = (key: SortKey) => (sort?.key === key ? (sort.dir === 1 ? ' ▲' : ' ▼') : '');
+
+  // Виртуализация таблицы: рендерим только видимое окно строк (для длинных списков).
+  const VIRTUAL_THRESHOLD = 80;
+  const VIEWPORT_H = 600;
+  const OVERSCAN = 8;
+  const virtualTable = viewMode === 'table' && sortedItems.length > VIRTUAL_THRESHOLD;
+  const visibleRows = Math.max(1, Math.ceil(VIEWPORT_H / rowH));
+  const winStart = virtualTable ? Math.max(0, Math.floor(scrollTop / rowH) - OVERSCAN) : 0;
+  const winEnd = virtualTable
+    ? Math.min(sortedItems.length, winStart + visibleRows + OVERSCAN * 2)
+    : sortedItems.length;
+  const windowItems = virtualTable ? sortedItems.slice(winStart, winEnd) : sortedItems;
+  const padTop = winStart * rowH;
+  const padBottom = (sortedItems.length - winEnd) * rowH;
+  const colCount = 1 + LETTER_COLUMNS.filter((c) => cols[c.key]).length + (isAdmin ? 1 : 0);
+
+  // Подстраиваем высоту строки под фактическую (чтобы прокрутка не «уплывала»).
+  useEffect(() => {
+    if (virtualTable && firstRowRef.current) {
+      const h = firstRowRef.current.offsetHeight;
+      if (h && Math.abs(h - rowH) > 0.5) setRowH(h);
+    }
+  });
 
   // --- управление стадиями ---
 
@@ -300,6 +402,13 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
       const text = await file.text();
       const { restoreBackup } = await import('./backup');
       await restoreBackup(text);
+      // Делаем восстановленные данные авторитетными и на сервере,
+      // иначе после перезагрузки серверный снимок их перезапишет.
+      try {
+        await pushStore(await createBackup());
+      } catch {
+        /* не критично — локально уже восстановлено */
+      }
       window.alert('Данные восстановлены. Страница будет перезагружена.');
       window.location.reload();
     } catch (e) {
@@ -542,6 +651,9 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                 e.target.value = '';
               }}
             />
+            <button type="button" onClick={() => setAccountOpen(true)} className="clear-button">
+              {session.username}
+            </button>
             <button type="button" onClick={onLogout} className="clear-button">
               Выйти
             </button>
@@ -612,6 +724,8 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
           </div>
         </div>
       </header>
+
+      {accountOpen ? <AccountDialog session={session} onClose={() => setAccountOpen(false)} /> : null}
 
       {globalQuery.trim() ? (
         <GlobalSearch
@@ -805,10 +919,15 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
               </label>
             </div>
           </div>
-          {viewMode === 'table' && isAdmin ? (
-            <button type="button" onClick={addEmptyRow} className="primary-button">
-              Добавить строку
-            </button>
+          {viewMode === 'table' ? (
+            <div className="table-header-actions">
+              <ColumnsMenu cols={cols} onToggle={toggleCol} onReset={resetCols} />
+              {isAdmin ? (
+                <button type="button" onClick={addEmptyRow} className="primary-button">
+                  Добавить строку
+                </button>
+              ) : null}
+            </div>
           ) : null}
         </div>
 
@@ -816,129 +935,172 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
           filteredItems.length === 0 ? (
             <p className="empty-state">Здесь пока нет данных.</p>
           ) : (
-            <div className="table-scroll spreadsheet-table">
+            <div
+              className={virtualTable ? 'table-scroll spreadsheet-table virtual' : 'table-scroll spreadsheet-table'}
+              onScroll={virtualTable ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}
+            >
               <fieldset className="table-fieldset" disabled={!isAdmin}>
               <table>
                 <thead>
                   <tr>
                     <th>#</th>
-                    <th className="sortable" onClick={() => toggleSort('sentDate')} title="Сортировать">
-                      Дата отправки{sortMark('sentDate')}
-                    </th>
-                    <th className="sortable" onClick={() => toggleSort('counterparty')} title="Сортировать">
-                      Контрагент{sortMark('counterparty')}
-                    </th>
-                    <th>Адресат / контакт</th>
-                    <th>Email / канал</th>
-                    <th>Тематика</th>
-                    <th>Тема письма</th>
-                    <th className="sortable" onClick={() => toggleSort('status')} title="Сортировать">
-                      Статус ответа{sortMark('status')}
-                    </th>
-                    <th className="sortable" onClick={() => toggleSort('replyDate')} title="Сортировать">
-                      Дата ответа{sortMark('replyDate')}
-                    </th>
-                    <th className="sortable" onClick={() => toggleSort('wait')} title="Сортировать">
-                      Срок, дн.{sortMark('wait')}
-                    </th>
-                    <th>Кто отвечает</th>
-                    <th>Примечание</th>
-                    <th>Док-ты</th>
+                    {cols.sentDate ? (
+                      <th className="sortable" onClick={() => toggleSort('sentDate')} title="Сортировать">
+                        Дата отправки{sortMark('sentDate')}
+                      </th>
+                    ) : null}
+                    {cols.counterparty ? (
+                      <th className="sortable" onClick={() => toggleSort('counterparty')} title="Сортировать">
+                        Контрагент{sortMark('counterparty')}
+                      </th>
+                    ) : null}
+                    {cols.contact ? <th>Адресат / контакт</th> : null}
+                    {cols.channel ? <th>Email / канал</th> : null}
+                    {cols.topic ? <th>Тематика</th> : null}
+                    {cols.subject ? <th>Тема письма</th> : null}
+                    {cols.status ? (
+                      <th className="sortable" onClick={() => toggleSort('status')} title="Сортировать">
+                        Статус ответа{sortMark('status')}
+                      </th>
+                    ) : null}
+                    {cols.replyDate ? (
+                      <th className="sortable" onClick={() => toggleSort('replyDate')} title="Сортировать">
+                        Дата ответа{sortMark('replyDate')}
+                      </th>
+                    ) : null}
+                    {cols.wait ? (
+                      <th className="sortable" onClick={() => toggleSort('wait')} title="Сортировать">
+                        Срок, дн.{sortMark('wait')}
+                      </th>
+                    ) : null}
+                    {cols.owner ? <th>Кто отвечает</th> : null}
+                    {cols.note ? <th>Примечание</th> : null}
+                    {cols.docs ? <th>Док-ты</th> : null}
                     {isAdmin ? <th>Удалить</th> : null}
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedItems.map((item, index) => {
+                  {virtualTable && padTop > 0 ? (
+                    <tr aria-hidden>
+                      <td colSpan={colCount} style={{ height: padTop, padding: 0, border: 'none' }} />
+                    </tr>
+                  ) : null}
+                  {windowItems.map((item, i) => {
+                    const index = winStart + i;
                     const days = waitingDays(item);
                     const overdue = days !== null && !item.replyDate && days > 14;
                     return (
-                      <tr key={item.id}>
+                      <tr key={item.id} ref={i === 0 ? firstRowRef : undefined}>
                         <td className="row-number">{index + 1}</td>
-                        <td>
-                          <input
-                            className="table-input"
-                            type="date"
-                            value={item.sentDate}
-                            onChange={(e) => updateItem(item.id, { sentDate: e.target.value })}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            className="table-input"
-                            value={item.counterparty}
-                            onChange={(e) => updateItem(item.id, { counterparty: e.target.value })}
-                            placeholder="Контрагент"
-                          />
-                        </td>
-                        <td>
-                          <input
-                            className="table-input"
-                            value={item.contact}
-                            onChange={(e) => updateItem(item.id, { contact: e.target.value })}
-                            placeholder="Адресат"
-                          />
-                        </td>
-                        <td>
-                          <input
-                            className="table-input"
-                            value={item.channel}
-                            onChange={(e) => updateItem(item.id, { channel: e.target.value })}
-                            placeholder="email / канал"
-                          />
-                        </td>
-                        <td>
-                          <input
-                            className="table-input"
-                            value={item.topic}
-                            onChange={(e) => updateItem(item.id, { topic: e.target.value })}
-                            placeholder="Тематика"
-                          />
-                        </td>
-                        <td>
-                          <input
-                            className="table-input"
-                            value={item.subject}
-                            onChange={(e) => updateItem(item.id, { subject: e.target.value })}
-                            placeholder="Тема письма"
-                          />
-                        </td>
-                        <td>
-                          <StatusSelect
-                            className="table-input"
-                            value={item.status}
-                            stages={stageList}
-                            onChange={(status) => changeStatus(item.id, status)}
-                            onAddStage={addStage}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            className="table-input"
-                            type="date"
-                            value={item.replyDate}
-                            onChange={(e) => updateItem(item.id, { replyDate: e.target.value })}
-                          />
-                        </td>
-                        <td className={overdue ? 'days-cell overdue' : 'days-cell'}>{days ?? '—'}</td>
-                        <td>
-                          <input
-                            className="table-input"
-                            value={item.owner}
-                            onChange={(e) => updateItem(item.id, { owner: e.target.value })}
-                            placeholder="Ответственный"
-                          />
-                        </td>
-                        <td>
-                          <input
-                            className="table-input"
-                            value={item.note}
-                            onChange={(e) => updateItem(item.id, { note: e.target.value })}
-                            placeholder="Примечание"
-                          />
-                        </td>
-                        <td className="doc-cell">
-                          <DocCell item={item} isAdmin={isAdmin} stages={stageList} />
-                        </td>
+                        {cols.sentDate ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              type="date"
+                              value={item.sentDate}
+                              onChange={(e) => updateItem(item.id, { sentDate: e.target.value })}
+                            />
+                          </td>
+                        ) : null}
+                        {cols.counterparty ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              value={item.counterparty}
+                              onChange={(e) => updateItem(item.id, { counterparty: e.target.value })}
+                              placeholder="Контрагент"
+                            />
+                          </td>
+                        ) : null}
+                        {cols.contact ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              value={item.contact}
+                              onChange={(e) => updateItem(item.id, { contact: e.target.value })}
+                              placeholder="Адресат"
+                            />
+                          </td>
+                        ) : null}
+                        {cols.channel ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              value={item.channel}
+                              onChange={(e) => updateItem(item.id, { channel: e.target.value })}
+                              placeholder="email / канал"
+                            />
+                          </td>
+                        ) : null}
+                        {cols.topic ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              value={item.topic}
+                              onChange={(e) => updateItem(item.id, { topic: e.target.value })}
+                              placeholder="Тематика"
+                            />
+                          </td>
+                        ) : null}
+                        {cols.subject ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              value={item.subject}
+                              onChange={(e) => updateItem(item.id, { subject: e.target.value })}
+                              placeholder="Тема письма"
+                            />
+                          </td>
+                        ) : null}
+                        {cols.status ? (
+                          <td>
+                            <StatusSelect
+                              className="table-input"
+                              value={item.status}
+                              stages={stageList}
+                              onChange={(status) => changeStatus(item.id, status)}
+                              onAddStage={addStage}
+                            />
+                          </td>
+                        ) : null}
+                        {cols.replyDate ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              type="date"
+                              value={item.replyDate}
+                              onChange={(e) => updateItem(item.id, { replyDate: e.target.value })}
+                            />
+                          </td>
+                        ) : null}
+                        {cols.wait ? (
+                          <td className={overdue ? 'days-cell overdue' : 'days-cell'}>{days ?? '—'}</td>
+                        ) : null}
+                        {cols.owner ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              value={item.owner}
+                              onChange={(e) => updateItem(item.id, { owner: e.target.value })}
+                              placeholder="Ответственный"
+                            />
+                          </td>
+                        ) : null}
+                        {cols.note ? (
+                          <td>
+                            <input
+                              className="table-input"
+                              value={item.note}
+                              onChange={(e) => updateItem(item.id, { note: e.target.value })}
+                              placeholder="Примечание"
+                            />
+                          </td>
+                        ) : null}
+                        {cols.docs ? (
+                          <td className="doc-cell">
+                            <DocCell item={item} isAdmin={isAdmin} stages={stageList} />
+                          </td>
+                        ) : null}
                         {isAdmin ? (
                           <td>
                             <button type="button" className="delete-button" onClick={() => removeItem(item.id)}>
@@ -949,6 +1111,11 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                       </tr>
                     );
                   })}
+                  {virtualTable && padBottom > 0 ? (
+                    <tr aria-hidden>
+                      <td colSpan={colCount} style={{ height: padBottom, padding: 0, border: 'none' }} />
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
               </fieldset>
@@ -998,6 +1165,7 @@ const SESSION_POLL_MS = 5 * 60 * 1000;
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
   // Восстановление сессии при загрузке.
   useEffect(() => {
@@ -1041,6 +1209,67 @@ export default function App() {
     };
   }, [session, handleLogout]);
 
+  // Подтягиваем данные с сервера при входе — чтобы введённое в прошлых версиях
+  // и на других устройствах было на месте. Приложение рендерим только после этого.
+  useEffect(() => {
+    if (!session) return;
+    let alive = true;
+    setSyncing(true);
+    (async () => {
+      const store = await fetchStore();
+      if (store) {
+        try {
+          await applyBackupData(store);
+        } catch {
+          /* несовместимый снимок — игнорируем, останутся локальные данные */
+        }
+      } else if (session.role === 'admin') {
+        // На сервере данных ещё нет — заливаем текущие локальные (миграция из браузера).
+        try {
+          const local = await createBackup();
+          if (local.items.length || local.tasks.length || local.interactions.length || local.docs.length) {
+            await pushStore(local);
+          }
+        } catch {
+          /* не критично */
+        }
+      }
+      if (alive) setSyncing(false);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [session]);
+
+  // Автосохранение изменений на сервер (только admin). Сравниваем дешёвую подпись;
+  // при изменении отправляем полный снимок. Плюс отправка при уходе со вкладки.
+  useEffect(() => {
+    if (!session || session.role !== 'admin' || syncing) return;
+    let last = dataSignature();
+    let busy = false;
+    const flush = async () => {
+      if (busy) return;
+      const sig = dataSignature();
+      if (sig === last) return;
+      busy = true;
+      try {
+        const backup = await createBackup();
+        if (await pushStore(backup)) last = sig;
+      } finally {
+        busy = false;
+      }
+    };
+    const timer = window.setInterval(flush, 4000);
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onHide);
+    };
+  }, [session, syncing]);
+
   if (loading) {
     return (
       <div className="login-page">
@@ -1054,6 +1283,17 @@ export default function App() {
 
   if (!session) {
     return <Login onLogin={setSession} />;
+  }
+
+  if (syncing) {
+    return (
+      <div className="login-page">
+        <div className="login-card">
+          <p className="brand">Cadence</p>
+          <p className="subtitle">Синхронизация данных…</p>
+        </div>
+      </div>
+    );
   }
 
   return <AppContent session={session} onLogout={handleLogout} />;

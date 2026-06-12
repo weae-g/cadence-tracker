@@ -63,14 +63,14 @@ function download(blob: Blob, filename: string) {
 }
 
 // Собирает и скачивает полную копию.
-export async function downloadBackup(): Promise<void> {
+// Собирает полный снимок данных (включая файлы документов в base64).
+export async function createBackup(): Promise<Backup> {
   const files = await getDocumentFiles();
   const blobs: BlobEntry[] = [];
   for (const { meta, blob } of files) {
     blobs.push({ id: meta.id, mime: meta.mime, data: await blobToBase64(blob) });
   }
-
-  const backup: Backup = {
+  return {
     app: 'resolve-table',
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -82,24 +82,22 @@ export async function downloadBackup(): Promise<void> {
     docs: getDocs(),
     blobs,
   };
+}
 
+// Скачивает снимок в файл.
+export async function downloadBackup(): Promise<void> {
+  const backup = await createBackup();
   download(new Blob([JSON.stringify(backup)], { type: 'application/json' }), `resolve-table-backup-${today()}.json`);
 }
 
 const isStrArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
 
-// Восстанавливает данные из текста JSON-файла. Бросает ошибку, если файл не наш.
-export async function restoreBackup(json: string): Promise<void> {
-  let parsed: Partial<Backup>;
-  try {
-    parsed = JSON.parse(json) as Partial<Backup>;
-  } catch {
-    throw new Error('Файл повреждён или это не JSON.');
-  }
+// Применяет снимок к локальному хранилищу (БЕЗ перезагрузки страницы).
+// Используется и при восстановлении из файла, и при синхронизации с сервера.
+export async function applyBackupData(parsed: Partial<Backup>): Promise<void> {
   if (!parsed || typeof parsed !== 'object' || parsed.app !== 'resolve-table') {
-    throw new Error('Это не файл резервной копии Resolve Table.');
+    throw new Error('Это не данные Resolve Table.');
   }
-
   // Письма прогоняем через нормализацию (восстановит историю и пропуски полей).
   const items = normalizeImport(parsed.items);
   if (items) saveItems(items);
@@ -115,4 +113,15 @@ export async function restoreBackup(json: string): Promise<void> {
     .filter((b): b is BlobEntry => !!b && typeof b.id === 'string' && typeof b.data === 'string')
     .map((b) => ({ id: b.id, blob: base64ToBlob(b.data, b.mime) }));
   await restoreDocuments(metas, blobs);
+}
+
+// Восстанавливает данные из текста JSON-файла (ручная кнопка «Восстановить»).
+export async function restoreBackup(json: string): Promise<void> {
+  let parsed: Partial<Backup>;
+  try {
+    parsed = JSON.parse(json) as Partial<Backup>;
+  } catch {
+    throw new Error('Файл повреждён или это не JSON.');
+  }
+  await applyBackupData(parsed);
 }
