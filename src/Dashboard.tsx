@@ -3,6 +3,55 @@ import { Item, stageColor } from './types';
 import { loadInteractions, loadTasks, today, ProjectMeta } from './storage';
 import { DocMeta, formatSize } from './docs';
 import { BarChart, KpiRow, TrendChart, countBy, trendFromDates } from './charts';
+import { Section } from './GlobalSearch';
+import { computeAttention } from './attention';
+
+const ONE_DAY = 24 * 60 * 60 * 1000;
+
+function parseDate(value: string): Date | null {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// Срок ожидания письма, дн. — тот же расчёт, что в таблице писем.
+function waitDays(item: Item): number | null {
+  const start = parseDate(item.sentDate);
+  if (!start) return null;
+  const end = parseDate(item.replyDate) ?? new Date();
+  return Math.max(0, Math.round((end.getTime() - start.getTime()) / ONE_DAY));
+}
+
+function fmtShort(value: string): string {
+  const d = parseDate(value);
+  return d ? d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : '—';
+}
+
+const ATTENTION_MAX = 5;
+
+// Одна кликабельная строка в панели «Требует внимания».
+function AttentionRow({
+  primary,
+  secondary,
+  meta,
+  warn,
+  onClick,
+}: {
+  primary: string;
+  secondary: string;
+  meta: string;
+  warn?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" className="attention-row" onClick={onClick}>
+      <span className="attention-row-main">
+        <span className="attention-row-primary">{primary}</span>
+        <span className="attention-row-secondary">{secondary}</span>
+      </span>
+      <span className={warn ? 'attention-row-meta warn' : 'attention-row-meta'}>{meta}</span>
+    </button>
+  );
+}
 
 // Стартовая сводка по всем разделам: ключевые показатели и основные диаграммы
 // на одной странице. Взаимодействия и задачи берём из хранилища (снимок при входе).
@@ -12,13 +61,29 @@ export function Dashboard({
   docs,
   project,
   projectMeta,
+  overdueDays,
+  onOpenLetter,
+  onJump,
 }: {
   items: Item[];
   stages: string[];
   docs: DocMeta[];
   project: string;
   projectMeta: ProjectMeta;
+  overdueDays: number;
+  onOpenLetter: (id: string) => void;
+  onJump: (section: Section) => void;
 }) {
+  // «Требует внимания»: что нужно сделать прямо сейчас.
+  //  • Запланированный «следующий шаг» наступил (дата ≤ сегодня) — высший приоритет.
+  //  • Письмо без ответа просрочено И без запланированного шага (план «снимает» письмо
+  //    отсюда до нужной даты — чтобы список не превращался в шум).
+  //  • Задача не выполнена и срок уже подошёл.
+  const attention = useMemo(
+    () => computeAttention(items, loadTasks(), overdueDays, project),
+    [items, project, overdueDays],
+  );
+
   const data = useMemo(() => {
     const inProj = (p: string) => project === '' || p === project;
     const scopedItems = items.filter((i) => inProj(i.project));
@@ -102,8 +167,88 @@ export function Dashboard({
   const empty =
     data.lettersTotal === 0 && data.tasksTotal === 0 && data.interactionsTotal === 0 && data.docsTotal === 0;
 
+  const todayStr = today();
+
   return (
-    <section className="card">
+    <>
+      {attention.total > 0 ? (
+        <section className="card attention-card">
+          <div className="attention-head">
+            <h2>Требует внимания</h2>
+            <span className="attention-total">{attention.total}</span>
+          </div>
+          <p className="hint">
+            Письма без ответа дольше {overdueDays} дн. и дела, у которых подошёл срок. Задайте письму «следующий
+            шаг» — и оно уйдёт отсюда до нужной даты.
+          </p>
+          <div className="attention-groups">
+            {attention.waiting.length ? (
+              <div className="attention-group">
+                <div className="attention-group-head">
+                  Ждут ответа — пора напомнить <span className="stages-count">{attention.waiting.length}</span>
+                </div>
+                {attention.waiting.slice(0, ATTENTION_MAX).map((i) => (
+                  <AttentionRow
+                    key={i.id}
+                    primary={i.counterparty.trim() || 'Без контрагента'}
+                    secondary={i.subject || i.topic || 'Без темы'}
+                    meta={`${waitDays(i) ?? '—'} дн.`}
+                    warn
+                    onClick={() => onOpenLetter(i.id)}
+                  />
+                ))}
+                {attention.waiting.length > ATTENTION_MAX ? (
+                  <div className="attention-more">…ещё {attention.waiting.length - ATTENTION_MAX}</div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {attention.nextSteps.length ? (
+              <div className="attention-group">
+                <div className="attention-group-head">
+                  Запланированный шаг наступил <span className="stages-count">{attention.nextSteps.length}</span>
+                </div>
+                {attention.nextSteps.slice(0, ATTENTION_MAX).map((i) => (
+                  <AttentionRow
+                    key={i.id}
+                    primary={i.counterparty.trim() || 'Без контрагента'}
+                    secondary={i.subject || i.topic || 'Без темы'}
+                    meta={`шаг ${fmtShort(i.nextActionDate)}`}
+                    warn={i.nextActionDate < todayStr}
+                    onClick={() => onOpenLetter(i.id)}
+                  />
+                ))}
+                {attention.nextSteps.length > ATTENTION_MAX ? (
+                  <div className="attention-more">…ещё {attention.nextSteps.length - ATTENTION_MAX}</div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {attention.tasks.length ? (
+              <div className="attention-group">
+                <div className="attention-group-head">
+                  Задачи: срок подошёл <span className="stages-count">{attention.tasks.length}</span>
+                </div>
+                {attention.tasks.slice(0, ATTENTION_MAX).map((t) => (
+                  <AttentionRow
+                    key={t.id}
+                    primary={t.title || 'Без названия'}
+                    secondary="задача"
+                    meta={`срок ${fmtShort(t.dueDate)}`}
+                    warn={t.dueDate < todayStr}
+                    onClick={() => onJump('tasks')}
+                  />
+                ))}
+                {attention.tasks.length > ATTENTION_MAX ? (
+                  <div className="attention-more">…ещё {attention.tasks.length - ATTENTION_MAX}</div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="card">
       <h2>Сводка</h2>
       {empty ? (
         <p className="empty-state">Данных пока нет — добавьте письма, задачи или взаимодействия.</p>
@@ -166,6 +311,7 @@ export function Dashboard({
           ) : null}
         </>
       )}
-    </section>
+      </section>
+    </>
   );
 }

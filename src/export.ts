@@ -91,6 +91,7 @@ export function exportToExcel(items: Item[], stages: string[]) {
       'Тема письма',
       'Статус ответа',
       'Дата ответа',
+      'Следующий шаг',
       'Срок ожидания, дн.',
       'Кто отвечает',
       'Примечание',
@@ -108,6 +109,7 @@ export function exportToExcel(items: Item[], stages: string[]) {
       it.subject,
       it.status,
       it.replyDate,
+      it.nextActionDate,
       waitingDays(it),
       it.owner,
       it.note,
@@ -124,10 +126,11 @@ export function exportToExcel(items: Item[], stages: string[]) {
 
   // Задачи
   addSheet(wb, 'Задачи', [
-    ['Проект', 'Задача', 'Описание', 'Срок', 'Статус', 'Результат', 'Дата выполнения'],
+    ['Проект', 'Задача', 'Контрагент', 'Описание', 'Срок', 'Статус', 'Результат', 'Дата выполнения'],
     ...tasks.map((t) => [
       t.project || '',
       t.title,
+      t.counterparty || '',
       t.description,
       t.dueDate,
       t.done ? 'Выполнено' : 'В работе',

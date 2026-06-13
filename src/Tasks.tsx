@@ -35,7 +35,15 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('ru-RU');
 }
 
-export function Tasks({ isAdmin, project }: { isAdmin: boolean; project: string }) {
+export function Tasks({
+  isAdmin,
+  project,
+  counterparties,
+}: {
+  isAdmin: boolean;
+  project: string;
+  counterparties: string[];
+}) {
   const [tasks, setTasks] = useState<Task[]>(() => loadTasks());
   const [newTask, setNewTask] = useState<Task>(() => defaultTask());
   const [monthFilter, setMonthFilter] = useState('Все');
@@ -148,6 +156,11 @@ export function Tasks({ isAdmin, project }: { isAdmin: boolean; project: string 
 
   return (
     <>
+      <datalist id="task-cp-list">
+        {counterparties.map((c) => (
+          <option key={c} value={c} />
+        ))}
+      </datalist>
       <div className="card tasks-toolbar no-print">
         <div className="mode-switch">
           <button
@@ -244,6 +257,15 @@ export function Tasks({ isAdmin, project }: { isAdmin: boolean; project: string 
               />
             </label>
             <label>
+              Контрагент
+              <input
+                list="task-cp-list"
+                value={newTask.counterparty}
+                onChange={(e) => setNewTask({ ...newTask, counterparty: e.target.value })}
+                placeholder="Компания (необязательно)"
+              />
+            </label>
+            <label>
               Срок
               <input
                 type="date"
@@ -320,6 +342,7 @@ export function Tasks({ isAdmin, project }: { isAdmin: boolean; project: string 
                 <article key={task.id} className="task-row done">
                   <div className="task-main">
                     <div className="task-title-static">✓ {task.title || 'Без названия'}</div>
+                    {task.counterparty ? <div className="task-cp-static">🏢 {task.counterparty}</div> : null}
                     {task.description ? <div className="task-desc-static">{task.description}</div> : null}
                     <label className="task-result">
                       Результат / что сделано
@@ -387,6 +410,13 @@ function ActiveTaskRow({
               onChange={(e) => onUpdate(task.id, { title: e.target.value })}
               placeholder="Название задачи"
             />
+            <input
+              className="task-cp-edit"
+              list="task-cp-list"
+              value={task.counterparty}
+              onChange={(e) => onUpdate(task.id, { counterparty: e.target.value })}
+              placeholder="Контрагент (необязательно)"
+            />
             <textarea
               className="task-desc"
               rows={2}
@@ -398,6 +428,7 @@ function ActiveTaskRow({
         ) : (
           <>
             <div className="task-title-static">{task.title || 'Без названия'}</div>
+            {task.counterparty ? <div className="task-cp-static">🏢 {task.counterparty}</div> : null}
             {task.description ? <div className="task-desc-static">{task.description}</div> : null}
           </>
         )}

@@ -16,6 +16,9 @@ import {
   saveTasks,
   saveInteractions,
   withStageChange,
+  today,
+  now,
+  uid,
   ProjectMeta,
 } from './storage';
 import { fetchSession, logout, Session } from './auth';
@@ -31,7 +34,12 @@ import { GlobalSearch, Section } from './GlobalSearch';
 import { applyBackupData, createBackup } from './backup';
 import { dataSignature, fetchStore, pushStore } from './sync';
 import { AccountDialog } from './AccountDialog';
+import { CounterpartyProfile } from './CounterpartyProfile';
+import { Calendar } from './Calendar';
+import { Board } from './Board';
 import { Help } from './Help';
+import { setSyncStatus, useSyncStatus } from './syncStatus';
+import { computeAttention } from './attention';
 
 const SECTION_KEY = 'resolve-table-section-v1';
 const VIEWMODE_KEY = 'resolve-table-viewmode-v1';
@@ -60,6 +68,23 @@ function BackToTop() {
     >
       ↑
     </button>
+  );
+}
+
+// Индикатор синхронизации с сервером в шапке — чтобы было видно, что данные сохранены.
+function SyncIndicator() {
+  const status = useSyncStatus();
+  const map = {
+    idle: { cls: 'saved', text: '✓ Сохранено' },
+    saving: { cls: 'saving', text: '⟳ Сохранение…' },
+    saved: { cls: 'saved', text: '✓ Сохранено' },
+    offline: { cls: 'offline', text: '⚠ Не сохранено' },
+  } as const;
+  const s = map[status];
+  return (
+    <span className={`sync-indicator ${s.cls}`} title="Состояние синхронизации с сервером" aria-live="polite">
+      {s.text}
+    </span>
   );
 }
 
@@ -187,10 +212,20 @@ function ProjectSelect({
   );
 }
 
-const SECTION_VALUES: Section[] = ['dashboard', 'letters', 'interactions', 'tasks', 'documents', 'help'];
+const SECTION_VALUES: Section[] = ['dashboard', 'letters', 'interactions', 'tasks', 'documents', 'calendar', 'help'];
 
 // Колонки таблицы писем, по которым доступна сортировка.
-type SortKey = 'sentDate' | 'counterparty' | 'status' | 'replyDate' | 'wait';
+type SortKey = 'sentDate' | 'counterparty' | 'status' | 'replyDate' | 'wait' | 'nextAction';
+
+// Быстрые фильтры-чипы: частые срезы писем в один клик (работают и в таблице, и в просмотре).
+type QuickFilter = 'all' | 'noreply' | 'overdue' | 'nextstep' | 'replied';
+const QUICK_FILTERS: { key: QuickFilter; label: string }[] = [
+  { key: 'all', label: 'Все' },
+  { key: 'noreply', label: 'Без ответа' },
+  { key: 'overdue', label: 'Просрочено' },
+  { key: 'nextstep', label: 'Есть след. шаг' },
+  { key: 'replied', label: 'Отвечено' },
+];
 
 // Управляемые (скрываемые) колонки таблицы писем. «#» и «Удалить» — всегда видны.
 // off: true — колонка по умолчанию скрыта (показывается через меню «Колонки»).
@@ -204,6 +239,7 @@ const LETTER_COLUMNS: { key: string; label: string; off?: boolean }[] = [
   { key: 'status', label: 'Статус ответа' },
   { key: 'replyDate', label: 'Дата ответа' },
   { key: 'wait', label: 'Срок, дн.' },
+  { key: 'nextAction', label: 'След. шаг', off: true },
   { key: 'owner', label: 'Кто отвечает' },
   { key: 'note', label: 'Примечание' },
   { key: 'docs', label: 'Док-ты' },
@@ -266,12 +302,30 @@ function formatShortDate(value: string) {
   return date ? date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : '—';
 }
 
+// Полная дата (дд.мм.гггг) — для таймлайна истории статусов.
+function formatDateRu(value: string) {
+  const date = parseDate(value);
+  return date ? date.toLocaleDateString('ru-RU') : '';
+}
+
 // Срок ожидания, дн. = Дата ответа − Дата отправки (или до сегодня, если ответа нет).
 function waitingDays(item: Item): number | null {
   const start = parseDate(item.sentDate);
   if (!start) return null;
   const end = parseDate(item.replyDate) ?? new Date();
   return Math.max(0, Math.round((end.getTime() - start.getTime()) / ONE_DAY));
+}
+
+// Дата YYYY-MM-DD со сдвигом на N дней от сегодня (для быстрых кнопок «+неделя» и т.п.).
+function isoPlusDays(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// «Следующий шаг» наступил? (дата задана и она сегодня или раньше)
+function nextActionDue(item: Item): boolean {
+  return !!item.nextActionDate && item.nextActionDate <= today();
 }
 
 const isEmail = (value: string) => /.+@.+\..+/.test(value.trim());
@@ -350,6 +404,28 @@ function StatusSelect({
   );
 }
 
+// Быстрые кнопки установки даты «следующего шага»: сегодня / +3 дня / +1 неделя / убрать.
+function NextStepChips({ value, onSet }: { value: string; onSet: (iso: string) => void }) {
+  return (
+    <div className="date-chips no-export">
+      <button type="button" className="range-chip" onClick={() => onSet(today())}>
+        Сегодня
+      </button>
+      <button type="button" className="range-chip" onClick={() => onSet(isoPlusDays(3))}>
+        +3 дня
+      </button>
+      <button type="button" className="range-chip" onClick={() => onSet(isoPlusDays(7))}>
+        +1 неделя
+      </button>
+      {value ? (
+        <button type="button" className="range-chip" onClick={() => onSet('')}>
+          Убрать
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 // Боковая панель редактирования письма — удобная альтернатива широкой строке.
 function LetterDrawer({
   item,
@@ -360,6 +436,11 @@ function LetterDrawer({
   onChangeStatus,
   onAddStage,
   onRemove,
+  onDuplicate,
+  onOpenProfile,
+  onPrev,
+  onNext,
+  navInfo,
   onClose,
 }: {
   item: Item;
@@ -370,31 +451,79 @@ function LetterDrawer({
   onChangeStatus: (id: string, status: string) => void;
   onAddStage: (name: string) => void;
   onRemove: (id: string) => void;
+  onDuplicate: (id: string) => void;
+  onOpenProfile: (counterparty: string) => void;
+  onPrev?: () => void;
+  onNext?: () => void;
+  navInfo?: string;
   onClose: () => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      // ←/→ листают письма, но не мешают вводу в полях.
+      const t = e.target as HTMLElement | null;
+      const typing =
+        !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+      if (typing) return;
+      if (e.key === 'ArrowLeft' && onPrev) onPrev();
+      if (e.key === 'ArrowRight' && onNext) onNext();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, onPrev, onNext]);
 
   const days = waitingDays(item);
   const set = (partial: Partial<Item>) => onUpdate(item.id, partial);
+
+  // Таймлайн: история смены статусов + (если есть) дата ответа — отсортированы по времени.
+  const timeline = [...item.history]
+    .map((h) => ({ label: h.stage, at: h.at }))
+    .concat(item.replyDate ? [{ label: 'Ответ получен', at: new Date(item.replyDate).toISOString() }] : [])
+    .sort((a, b) => a.at.localeCompare(b.at));
 
   return createPortal(
     <div className="drawer-overlay" onClick={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-head">
-          <div>
+          <div className="drawer-head-main">
             <h3>{item.subject || item.counterparty || 'Письмо'}</h3>
-            <p className="hint">Срок ожидания: {days ?? '—'} дн.</p>
+            <p className="hint">
+              Срок ожидания: {days ?? '—'} дн.
+              {item.nextActionDate ? ` · след. шаг ${formatShortDate(item.nextActionDate)}` : ''}
+            </p>
           </div>
-          <button type="button" className="doc-close" onClick={onClose} title="Закрыть (Esc)">
-            ✕
-          </button>
+          <div className="drawer-head-actions">
+            {onPrev || onNext ? (
+              <div className="drawer-nav">
+                <button type="button" className="doc-icon-btn" onClick={onPrev} disabled={!onPrev} title="Предыдущее письмо (←)">
+                  ←
+                </button>
+                {navInfo ? <span className="drawer-nav-info">{navInfo}</span> : null}
+                <button type="button" className="doc-icon-btn" onClick={onNext} disabled={!onNext} title="Следующее письмо (→)">
+                  →
+                </button>
+              </div>
+            ) : null}
+            <button type="button" className="doc-close" onClick={onClose} title="Закрыть (Esc)">
+              ✕
+            </button>
+          </div>
         </div>
+
+        {item.counterparty.trim() ? (
+          <button
+            type="button"
+            className="drawer-cp-link"
+            onClick={() => onOpenProfile(item.counterparty.trim())}
+            title="Открыть досье контрагента"
+          >
+            🏢 {item.counterparty.trim()} · досье →
+          </button>
+        ) : null}
 
         <fieldset className="drawer-body form-grid" disabled={!isAdmin}>
           <label>
@@ -433,6 +562,25 @@ function LetterDrawer({
           <label>
             Дата ответа
             <input type="date" value={item.replyDate} onChange={(e) => set({ replyDate: e.target.value })} />
+            <div className="date-chips no-export">
+              <button type="button" className="range-chip" onClick={() => set({ replyDate: today() })}>
+                Ответ сегодня
+              </button>
+              {item.replyDate ? (
+                <button type="button" className="range-chip" onClick={() => set({ replyDate: '' })}>
+                  Убрать
+                </button>
+              ) : null}
+            </div>
+          </label>
+          <label>
+            Следующий шаг {nextActionDue(item) ? <span className="next-due-flag">пора</span> : null}
+            <input
+              type="date"
+              value={item.nextActionDate}
+              onChange={(e) => set({ nextActionDate: e.target.value })}
+            />
+            <NextStepChips value={item.nextActionDate} onSet={(iso) => set({ nextActionDate: iso })} />
           </label>
           <label>
             Кто отвечает
@@ -460,8 +608,36 @@ function LetterDrawer({
           <DocCell item={item} isAdmin={isAdmin} stages={stages} />
         </div>
 
+        <div className="drawer-section">
+          <h4>История статусов</h4>
+          {timeline.length ? (
+            <ol className="timeline">
+              {timeline.map((t, i) => (
+                <li key={i} className="timeline-item">
+                  <span className="timeline-dot" />
+                  <span className="timeline-stage">{t.label}</span>
+                  <span className="timeline-date">{formatDateRu(t.at)}</span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="hint">Пока нет событий.</p>
+          )}
+        </div>
+
         {isAdmin ? (
           <div className="drawer-actions">
+            <button
+              type="button"
+              className="clear-button"
+              onClick={() => {
+                onDuplicate(item.id);
+                onClose();
+              }}
+              title="Создать копию: тот же контрагент и контакты, новая тема"
+            >
+              ⧉ Дублировать
+            </button>
             <button
               type="button"
               className="delete-button"
@@ -490,8 +666,13 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   const [newItem, setNewItem] = useState<Item>(() => defaultItem(loadStages()[0]));
   const [filterStatus, setFilterStatus] = useState('Все');
   const [filterCounterparty, setFilterCounterparty] = useState('Все контрагенты');
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   const [search, setSearch] = useState('');
   const [globalQuery, setGlobalQuery] = useState('');
+  // Контрагент, чьё «досье» открыто (оверлей). Пусто — закрыто.
+  const [profileName, setProfileName] = useState<string | null>(null);
+  // Порядок id писем для навигации ←/→ внутри карточки письма (зависит от контекста открытия).
+  const [navIds, setNavIds] = useState<string[]>([]);
   const [previewRange, setPreviewRange] = useState<Range>(EMPTY_RANGE);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
   const [cols, setCols] = useState<Record<string, boolean>>(() => loadCols());
@@ -520,9 +701,9 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   const firstRowRef = useRef<HTMLTableRowElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [rowH, setRowH] = useState(44);
-  const [viewMode, setViewMode] = useState<'table' | 'view'>(() => {
+  const [viewMode, setViewMode] = useState<'table' | 'view' | 'board'>(() => {
     const saved = localStorage.getItem(VIEWMODE_KEY);
-    if (saved === 'table' || saved === 'view') return saved;
+    if (saved === 'table' || saved === 'view' || saved === 'board') return saved;
     return isAdmin ? 'table' : 'view';
   });
   const [section, setSection] = useState<Section>(() => {
@@ -537,8 +718,26 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   const [toasts, setToasts] = useState<{ id: string; message: string; onUndo: () => void; onClose: () => void }[]>([]);
   const restoreInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const globalSearchRef = useRef<HTMLInputElement>(null);
+  const addFormRef = useRef<HTMLDivElement>(null);
   const toastTimers = useRef<Map<string, number>>(new Map());
   const docs = useDocs();
+
+  // Горячая клавиша «/» — фокус в поле сквозного поиска (как в GitHub/Slack),
+  // но только когда пользователь не печатает в другом поле.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      const typing =
+        !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+      if (typing) return;
+      e.preventDefault();
+      globalSearchRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Тост с «Отменить»: через 6 c (или по ✕) изменение фиксируется (onCommit).
   const showUndoToast = (message: string, onUndo: () => void, onCommit: () => void) => {
@@ -678,6 +877,18 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
     localStorage.setItem(DENSE_KEY, dense ? '1' : '0');
   }, [dense]);
 
+  // Счётчик «требует внимания» в заголовке вкладки браузера (виден, даже когда вкладка в фоне).
+  const attentionTotal = useMemo(
+    () => computeAttention(items, loadTasks(), overdueDays, activeProject).total,
+    [items, overdueDays, activeProject, section],
+  );
+  useEffect(() => {
+    document.title = attentionTotal > 0 ? `(${attentionTotal}) Cadence` : 'Cadence';
+    return () => {
+      document.title = 'Cadence';
+    };
+  }, [attentionTotal]);
+
   const savePreset = (name: string) =>
     setPresets((prev) => [
       ...prev,
@@ -702,7 +913,8 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
     [items],
   );
 
-  const filteredItems = useMemo(() => {
+  // Базовый набор: все фильтры, КРОМЕ быстрого чипа (на нём считаем счётчики чипов).
+  const baseFiltered = useMemo(() => {
     const query = search.trim().toLowerCase();
     return items.filter((item) => {
       if (activeProject !== '' && item.project !== activeProject) return false;
@@ -722,6 +934,35 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
       return true;
     });
   }, [items, filterStatus, filterCounterparty, search, activeProject]);
+
+  // Совпадает ли письмо с быстрым фильтром-чипом.
+  const matchesQuick = (item: Item, q: QuickFilter): boolean => {
+    if (q === 'noreply') return !item.replyDate;
+    if (q === 'replied') return !!item.replyDate;
+    if (q === 'nextstep') return !!item.nextActionDate;
+    if (q === 'overdue') {
+      const d = waitingDays(item);
+      return !item.replyDate && d !== null && d > overdueDays;
+    }
+    return true;
+  };
+
+  const quickCounts = useMemo(() => {
+    const counts: Record<QuickFilter, number> = { all: baseFiltered.length, noreply: 0, overdue: 0, nextstep: 0, replied: 0 };
+    baseFiltered.forEach((item) => {
+      if (!item.replyDate) counts.noreply += 1;
+      else counts.replied += 1;
+      if (item.nextActionDate) counts.nextstep += 1;
+      const d = waitingDays(item);
+      if (!item.replyDate && d !== null && d > overdueDays) counts.overdue += 1;
+    });
+    return counts;
+  }, [baseFiltered, overdueDays]);
+
+  const filteredItems = useMemo(
+    () => baseFiltered.filter((item) => matchesQuick(item, quickFilter)),
+    [baseFiltered, quickFilter, overdueDays],
+  );
 
   const statusCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -744,6 +985,9 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
           return it.status || '';
         case 'wait':
           return waitingDays(it) ?? -1;
+        case 'nextAction':
+          // письма без запланированного шага — в конец при сортировке по возрастанию
+          return it.nextActionDate || '9999-12-31';
       }
     };
     return [...filteredItems].sort((a, b) => {
@@ -759,6 +1003,22 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
   const toggleSort = (key: SortKey) =>
     setSort((prev) => (prev && prev.key === key ? (prev.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
   const sortMark = (key: SortKey) => (sort?.key === key ? (sort.dir === 1 ? ' ▲' : ' ▼') : '');
+
+  // Открыть карточку письма. ids — список для навигации ←/→ (по умолчанию — текущий
+  // видимый список писем; из «досье» компании передаём её письма).
+  const openLetter = (id: string, ids?: string[]) => {
+    setNavIds(ids ?? sortedItems.map((it) => it.id));
+    setEditItemId(id);
+  };
+  // Сосед по навигации внутри карточки письма.
+  const navStep = (dir: -1 | 1) => {
+    if (!editItemId) return;
+    const i = navIds.indexOf(editItemId);
+    if (i === -1) return;
+    const target = navIds[i + dir];
+    if (target) setEditItemId(target);
+  };
+  const navPos = editItemId ? navIds.indexOf(editItemId) : -1;
 
   // Виртуализация таблицы: рендерим только видимое окно строк (для длинных списков).
   const VIRTUAL_THRESHOLD = 80;
@@ -844,6 +1104,29 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
 
   const addEmptyRow = () => {
     setItems((prev) => [defaultItem(stageList[0], activeProject), ...prev]);
+  };
+
+  // Дублирование письма: повторное обращение к тому же контрагенту. Сохраняем
+  // контакты/тематику/тему, но сбрасываем статус на первую стадию, даты и историю.
+  const duplicateItem = (id: string) => {
+    setItems((prev) => {
+      const index = prev.findIndex((it) => it.id === id);
+      if (index === -1) return prev;
+      const src = prev[index];
+      const startStage = stageList[0] ?? src.status;
+      const copy: Item = {
+        ...src,
+        id: uid(),
+        sentDate: today(),
+        status: startStage,
+        replyDate: '',
+        nextActionDate: '',
+        history: [{ stage: startStage, at: now() }],
+      };
+      const next = [...prev];
+      next.splice(index + 1, 0, copy); // сразу под исходным письмом
+      return next;
+    });
   };
 
   const updateItem = (id: string, partial: Partial<Item>) => {
@@ -1078,6 +1361,14 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
         <div className="preview-toolbar">
           {rangeFilter}
           <ChartsMenu charts={PREVIEW_CHARTS} hidden={hiddenCharts} onToggle={toggleChart} />
+          <button
+            type="button"
+            className="clear-button no-print"
+            onClick={() => window.print()}
+            title="Распечатать карточки или сохранить в PDF"
+          >
+            Печать / PDF
+          </button>
         </div>
 
         <KpiRow
@@ -1106,7 +1397,7 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
           ) : null}
         </div>
 
-        <div className="company-summary-grid">
+        <div className="company-summary-grid print-area">
           {previewCounterparties.map((counterparty) => {
             const list = rangedItems.filter(
               (item) => (item.counterparty.trim() || 'Без контрагента') === counterparty,
@@ -1121,7 +1412,14 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
             return (
               <article key={counterparty} className="company-card">
                 <div className="company-header">
-                  <strong>{counterparty}</strong>
+                  <button
+                    type="button"
+                    className="company-title-btn"
+                    onClick={() => setProfileName(counterparty)}
+                    title="Открыть досье контрагента"
+                  >
+                    {counterparty}
+                  </button>
                   <span>{list.length} писем</span>
                 </div>
                 <div className="company-mini-meta">
@@ -1146,7 +1444,20 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                 ) : null}
                 <div className="company-items">
                   {list.map((item) => (
-                    <div key={item.id} className="company-item-row">
+                    <div
+                      key={item.id}
+                      className="company-item-row company-item-clickable"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openLetter(item.id, list.map((l) => l.id))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openLetter(item.id, list.map((l) => l.id));
+                        }
+                      }}
+                      title="Открыть карточку письма"
+                    >
                       <div className="company-item-title">{item.subject || 'Тема не задана'}</div>
                       <div className="company-item-text">{item.topic || 'Тематика не задана'}</div>
                       <div className="company-item-meta">
@@ -1165,7 +1476,9 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                         <span>{waitingDays(item) ?? '—'} дн.</span>
                         <span>
                           {isEmail(item.channel) ? (
-                            <a href={`mailto:${item.channel.trim()}`}>{item.contact || item.channel}</a>
+                            <a href={`mailto:${item.channel.trim()}`} onClick={(e) => e.stopPropagation()}>
+                              {item.contact || item.channel}
+                            </a>
                           ) : (
                             item.contact || item.channel || 'Контакт не задан'
                           )}
@@ -1221,9 +1534,10 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
           <label className="global-search-box">
             <span aria-hidden>🔎</span>
             <input
+              ref={globalSearchRef}
               value={globalQuery}
               onChange={(e) => setGlobalQuery(e.target.value)}
-              placeholder="Искать везде…"
+              placeholder="Искать везде…  ( / )"
             />
             {globalQuery ? (
               <button type="button" className="gs-clear" onClick={() => setGlobalQuery('')} title="Очистить">
@@ -1232,6 +1546,7 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
             ) : null}
           </label>
           <div className="topbar-actions">
+            <SyncIndicator />
             <details className="columns-menu data-menu">
               <summary className="clear-button">Данные ▾</summary>
               <div className="columns-popover data-popover">
@@ -1330,6 +1645,13 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
               </button>
               <button
                 type="button"
+                className={section === 'calendar' ? 'toggle-button active' : 'toggle-button'}
+                onClick={() => setSection('calendar')}
+              >
+                Календарь
+              </button>
+              <button
+                type="button"
                 className={section === 'help' ? 'toggle-button active' : 'toggle-button'}
                 onClick={() => setSection('help')}
                 title="Справка и обучение"
@@ -1353,6 +1675,13 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                 >
                   Просмотр
                 </button>
+                <button
+                  type="button"
+                  className={viewMode === 'board' ? 'toggle-button active' : 'toggle-button'}
+                  onClick={() => setViewMode('board')}
+                >
+                  Доска
+                </button>
               </div>
             ) : null}
           </div>
@@ -1369,6 +1698,11 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
           onChangeStatus={changeStatus}
           onAddStage={addStage}
           onRemove={removeItem}
+          onDuplicate={duplicateItem}
+          onOpenProfile={(cp) => setProfileName(cp)}
+          onPrev={navPos > 0 ? () => navStep(-1) : undefined}
+          onNext={navPos >= 0 && navPos < navIds.length - 1 ? () => navStep(1) : undefined}
+          navInfo={navPos >= 0 ? `${navPos + 1} / ${navIds.length}` : undefined}
           onClose={() => setEditItemId(null)}
         />
       ) : null}
@@ -1388,6 +1722,18 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
         />
       ) : null}
 
+      {profileName ? (
+        <CounterpartyProfile
+          name={profileName}
+          project={activeProject}
+          items={items}
+          stages={stageList}
+          docs={docs}
+          onOpenLetter={openLetter}
+          onClose={() => setProfileName(null)}
+        />
+      ) : null}
+
       {globalQuery.trim() ? (
         <GlobalSearch
           query={globalQuery}
@@ -1404,15 +1750,39 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
       {section === 'help' ? <Help /> : null}
 
       {section === 'dashboard' ? (
-        <Dashboard items={items} stages={stageList} docs={docs} project={activeProject} projectMeta={projectMeta} />
+        <Dashboard
+          items={items}
+          stages={stageList}
+          docs={docs}
+          project={activeProject}
+          projectMeta={projectMeta}
+          overdueDays={overdueDays}
+          onOpenLetter={(id) => openLetter(id)}
+          onJump={(target) => setSection(target)}
+        />
       ) : null}
 
       {section === 'interactions' ? <Interactions isAdmin={isAdmin} project={activeProject} /> : null}
 
-      {section === 'tasks' ? <Tasks isAdmin={isAdmin} project={activeProject} /> : null}
+      {section === 'tasks' ? (
+        <Tasks
+          isAdmin={isAdmin}
+          project={activeProject}
+          counterparties={counterparties.filter((c) => c !== 'Без контрагента')}
+        />
+      ) : null}
 
       {section === 'documents' ? (
         <Documents items={items} stages={stageList} isAdmin={isAdmin} project={activeProject} />
+      ) : null}
+
+      {section === 'calendar' ? (
+        <Calendar
+          items={items}
+          project={activeProject}
+          onOpenLetter={openLetter}
+          onJump={(target) => setSection(target)}
+        />
       ) : null}
 
       {section === 'letters' && (
@@ -1461,7 +1831,17 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
       {isAdmin && (
       <section className="card">
         <h2>Добавить письмо</h2>
-        <div className="form-grid">
+        <div
+          className="form-grid"
+          ref={addFormRef}
+          onKeyDown={(e) => {
+            // Ctrl/Cmd+Enter — быстро добавить письмо, не тянясь к кнопке.
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+              e.preventDefault();
+              addItem();
+            }
+          }}
+        >
           <label>
             Дата отправки
             <input
@@ -1525,6 +1905,14 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
               type="date"
               value={newItem.replyDate}
               onChange={(e) => setNewItem({ ...newItem, replyDate: e.target.value })}
+            />
+          </label>
+          <label>
+            Следующий шаг
+            <input
+              type="date"
+              value={newItem.nextActionDate}
+              onChange={(e) => setNewItem({ ...newItem, nextActionDate: e.target.value })}
             />
           </label>
           <label>
@@ -1599,6 +1987,20 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                 <PresetsMenu presets={presets} onApply={applyPreset} onSave={savePreset} onDelete={deletePreset} />
               </div>
             </div>
+            <div className="quick-filters">
+              {QUICK_FILTERS.map((qf) => (
+                <button
+                  key={qf.key}
+                  type="button"
+                  className={quickFilter === qf.key ? 'quick-chip active' : 'quick-chip'}
+                  onClick={() => setQuickFilter(qf.key)}
+                  title={`Показать: ${qf.label.toLowerCase()}`}
+                >
+                  {qf.label}
+                  <span className="quick-chip-count">{quickCounts[qf.key]}</span>
+                </button>
+              ))}
+            </div>
           </div>
           {viewMode === 'table' ? (
             <div className="table-header-actions">
@@ -1640,7 +2042,11 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
             <EmptyState
               icon="✉️"
               text={
-                activeProject || filterStatus !== 'Все' || filterCounterparty !== 'Все контрагенты' || search
+                activeProject ||
+                filterStatus !== 'Все' ||
+                filterCounterparty !== 'Все контрагенты' ||
+                search ||
+                quickFilter !== 'all'
                   ? 'Под выбранные фильтры писем нет.'
                   : 'Писем пока нет.'
               }
@@ -1744,11 +2150,16 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                         Срок, дн.{sortMark('wait')}
                       </th>
                     ) : null}
+                    {cols.nextAction ? (
+                      <th className="sortable" onClick={() => toggleSort('nextAction')} title="Сортировать">
+                        След. шаг{sortMark('nextAction')}
+                      </th>
+                    ) : null}
                     {cols.owner ? <th>Кто отвечает</th> : null}
                     {cols.note ? <th>Примечание</th> : null}
                     {cols.docs ? <th>Док-ты</th> : null}
                     {cols.project ? <th>Проект</th> : null}
-                    {isAdmin ? <th>Удалить</th> : null}
+                    {isAdmin ? <th>Действия</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -1761,6 +2172,7 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                     const index = winStart + i;
                     const days = waitingDays(item);
                     const overdue = days !== null && !item.replyDate && days > overdueDays;
+                    const nextDue = nextActionDue(item);
                     return (
                       <tr key={item.id} ref={i === 0 ? firstRowRef : undefined} className={selected.has(item.id) ? 'row-selected' : undefined}>
                         {isAdmin ? (
@@ -1774,11 +2186,11 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                             tabIndex={0}
                             className="row-open"
                             title="Открыть карточку письма"
-                            onClick={() => setEditItemId(item.id)}
+                            onClick={() => openLetter(item.id)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
-                                setEditItemId(item.id);
+                                openLetter(item.id);
                               }
                             }}
                           >
@@ -1882,6 +2294,17 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                             {days ?? '—'}
                           </td>
                         ) : null}
+                        {cols.nextAction ? (
+                          <td data-label="След. шаг" className={nextDue ? 'next-step-cell next-due' : 'next-step-cell'}>
+                            <input
+                              className="table-input"
+                              type="date"
+                              value={item.nextActionDate}
+                              onChange={(e) => updateItem(item.id, { nextActionDate: e.target.value })}
+                              title={nextDue ? 'Запланированный шаг наступил' : 'Дата следующего шага'}
+                            />
+                          </td>
+                        ) : null}
                         {cols.owner ? (
                           <td data-label="Кто отвечает">
                             <input
@@ -1925,9 +2348,19 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
                         ) : null}
                         {isAdmin ? (
                           <td>
-                            <button type="button" className="delete-button" onClick={() => removeItem(item.id)}>
-                              Удалить
-                            </button>
+                            <div className="row-actions">
+                              <button
+                                type="button"
+                                className="clear-button row-dup"
+                                onClick={() => duplicateItem(item.id)}
+                                title="Дублировать письмо"
+                              >
+                                ⧉
+                              </button>
+                              <button type="button" className="delete-button" onClick={() => removeItem(item.id)}>
+                                Удалить
+                              </button>
+                            </div>
                           </td>
                         ) : null}
                       </tr>
@@ -1944,6 +2377,15 @@ function AppContent({ session, onLogout }: { session: Session; onLogout: () => v
             </div>
             </>
           )
+        ) : viewMode === 'board' ? (
+          <Board
+            items={filteredItems}
+            stages={stageList}
+            isAdmin={isAdmin}
+            overdueDays={overdueDays}
+            onChangeStatus={changeStatus}
+            onOpenLetter={openLetter}
+          />
         ) : (
           renderPreview()
         )}
@@ -2075,7 +2517,10 @@ export default function App() {
           /* не критично */
         }
       }
-      if (alive) setSyncing(false);
+      if (alive) {
+        setSyncing(false);
+        setSyncStatus('saved'); // данные согласованы с сервером
+      }
     })();
     return () => {
       alive = false;
@@ -2093,9 +2538,17 @@ export default function App() {
       const sig = dataSignature();
       if (sig === last) return;
       busy = true;
+      setSyncStatus('saving');
       try {
         const backup = await createBackup();
-        if (await pushStore(backup)) last = sig;
+        if (await pushStore(backup)) {
+          last = sig;
+          setSyncStatus('saved');
+        } else {
+          setSyncStatus('offline');
+        }
+      } catch {
+        setSyncStatus('offline');
       } finally {
         busy = false;
       }

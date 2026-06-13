@@ -32,6 +32,7 @@ export type Task = {
   id: string;
   title: string; // что нужно сделать
   description: string; // детали
+  counterparty: string; // контрагент, к которому относится задача ('' — без привязки)
   dueDate: string; // срок (дата)
   done: boolean;
   result: string; // описание результата (заполняется при/после выполнения)
@@ -69,6 +70,7 @@ export type Item = {
   subject: string; // Тема письма
   status: string; // Статус ответа (текущая стадия)
   replyDate: string; // Дата ответа (пусто, пока ответа нет)
+  nextActionDate: string; // Дата следующего шага / напоминания «написать снова» (пусто — без напоминания)
   owner: string; // Кто отвечает у нас
   note: string; // Примечание
   project: string; // Проект (проставляется автоматически из активного; '' — без проекта)

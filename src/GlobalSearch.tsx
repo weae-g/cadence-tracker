@@ -3,7 +3,7 @@ import { Item } from './types';
 import { loadInteractions, loadTasks } from './storage';
 import { DocMeta } from './docs';
 
-export type Section = 'dashboard' | 'letters' | 'interactions' | 'tasks' | 'documents' | 'help';
+export type Section = 'dashboard' | 'letters' | 'interactions' | 'tasks' | 'documents' | 'calendar' | 'help';
 
 type Hit = { id: string; primary: string; secondary: string };
 
@@ -48,11 +48,11 @@ export function GlobalSearch({
       }));
 
     const tasks: Hit[] = loadTasks()
-      .filter((t) => inProj(t.project) && has(t.title, t.description, t.result))
+      .filter((t) => inProj(t.project) && has(t.title, t.description, t.result, t.counterparty))
       .map((t) => ({
         id: t.id,
         primary: t.title || 'Без названия',
-        secondary: t.done ? 'Выполнено' : 'В работе',
+        secondary: [t.counterparty, t.done ? 'Выполнено' : 'В работе'].filter(Boolean).join(' · '),
       }));
 
     const documents: Hit[] = docs
